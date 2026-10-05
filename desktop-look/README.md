@@ -2,7 +2,7 @@
 
 A Claude Code mod that makes the terminal transcript look more like the desktop app.
 
-![Before and after, running and failed states](../docs/desktop-look.png)
+![Before and after, the info band, running and failed states](../docs/desktop-look.png)
 
 - **Prompt bubbles**: your own messages sit on the right in a rounded bubble, wrapping at a share of the terminal width
 - **Tool cards**: a tool call, its live progress and its result share one rail down the left edge, so they read as one card
