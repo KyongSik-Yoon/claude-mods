@@ -8,6 +8,7 @@ A Claude Code mod that makes the terminal transcript look more like the desktop 
 - **Tool cards**: a tool call, its live progress and its result share one rail down the left edge, so they read as one card
 - **State at a glance**: the rail is blue while a call runs, red when it errored, was refused at the dialog or was interrupted, and dim once done
 - The engine still draws everything inside a card, so each tool's own summary and diff are unchanged
+- **Info band** above the prompt: what this session edited (`✎ 2 files +7 -0`) and spent (`$0.05`) on the left, the tools running (`↻ Read ×3, Grep`, or `↻ 4 running` when narrow) on the right; hidden when there is nothing to show
 - Assistant replies are left alone, so it works alongside [smooth-stream](../smooth-stream)
 - Terminal only; the desktop app, VS Code and mobile keep their own look
 
@@ -22,13 +23,23 @@ Then run `/reload-plugins` or start a new session. Requires a Claude Code build 
 
 ## Options
 
-Defaults to `75%`; no setup needed. To change it, run `/plugin configure desktop-look@kyongsik-mods` (or open `/config`) and set **Bubble width** to `60%`, `75%` or `90%`.
+No setup needed. To change one, run `/plugin configure desktop-look@kyongsik-mods` (or open `/config`):
+
+| Option | Default | |
+| --- | --- | --- |
+| Bubble width | `75%` | `60%`, `75%` or `90%` of the terminal |
+| Info band | on | The band above the prompt |
+| Band: model | off | Model and effort, for a status line that does not show them |
+| Band: context | off | Context fill, for a status line that does not show it |
+
+The cost is what Claude Code computes at API prices; on a subscription it is not what you are billed.
 
 ## How it works
 
 - `UserMessage` (your own prompts only, not task notifications or other sessions' messages) is drawn as a right-aligned `Box` with a round border.
 - `ToolUse`, `ToolGroup`, `ToolProgress` and `ToolResult` are separate render sites, so one border cannot span them. Each wraps the engine's own row (`await next(e)`) and adds an absolutely positioned one-column rail that stretches to the row's height, skipping the blank line the engine opens a tool row with.
 - The rail colour comes from the row's props: `isRunning`, `isErrored`, `isInterrupted`, and the calls of a group.
+- The band is an `AbovePrompt` hook reading values in `$.state`, written by `tool.call` (tools running, and the `+`/`-` lines of each Edit and Write result's patch), `session.measure` (cost, context) and `turn.step` (model). A new session (`/clear`) starts the tally over; a reload keeps it.
 
 ## Develop
 

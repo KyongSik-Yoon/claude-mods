@@ -1,7 +1,7 @@
 {
   "name": "desktop-look",
-  "version": "0.2.0",
-  "description": "Make the terminal transcript look like the Claude Code desktop app: prompt bubbles and tool cards",
+  "version": "0.3.0",
+  "description": "Make the terminal transcript look like the Claude Code desktop app: prompt bubbles, tool cards and an info band",
   "author": {
     "name": "KyongSik-Yoon"
   },
@@ -16,6 +16,25 @@
         "90%"
       ],
       "default": "75%"
+    },
+    "showBand": {
+      "type": "boolean",
+      "title": "Info band",
+      "description": "Show the band above the prompt (tools running, and the model and context fill when turned on below)",
+      "default": true
+    },
+    "bandModel": {
+      "type": "boolean",
+      "title": "Band: model",
+      "description": "Show the model and effort in the band (off when your status line already shows them)",
+      "default": false
+    },
+    "bandContext": {
+      "type": "boolean",
+      "title": "Band: context",
+      "description": "Show the context fill in the band (off when your status line already shows it)",
+      "default": false
     }
-  }
+  },
+  "types": "./types/index.d.ts"
 }

@@ -17,8 +17,8 @@
     {
       "name": "desktop-look",
       "source": "./desktop-look",
-      "description": "Make the terminal transcript look like the Claude Code desktop app: prompt bubbles and tool cards",
-      "version": "0.2.0"
+      "description": "Make the terminal transcript look like the Claude Code desktop app: prompt bubbles, tool cards and an info band",
+      "version": "0.3.0"
     }
   ]
 }

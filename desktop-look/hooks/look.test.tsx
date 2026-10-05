@@ -1,5 +1,8 @@
 import type { On, RenderElement, RenderNode } from 'claude-code'
-import { expect, test } from 'claude-code/testing'
+import { expect, mock, test } from 'claude-code/testing'
+import type { Engine } from 'claude-code/testing'
+
+import { diffStat, dollars, fill, modelLabel, runningLabel, toolLabel } from './register'
 
 // Every element of a drawn tree, outermost first.
 const walk = (node: RenderNode): RenderElement[] =>
@@ -7,8 +10,9 @@ const walk = (node: RenderNode): RenderElement[] =>
 
 type BoxElement = Extract<RenderElement, { type: 'Box' }>
 const boxes = (tree: RenderElement) => walk(tree).filter((n): n is BoxElement => n.type === 'Box')
+// One string per Text element, its pieces joined as drawn.
 const texts = (tree: RenderElement) =>
-  walk(tree).flatMap(n => (n.type === 'Text' ? (n.children ?? []).filter(c => typeof c === 'string') : []))
+  walk(tree).flatMap(n => (n.type === 'Text' ? [(n.children ?? []).filter(c => typeof c === 'string').join('')] : []))
 
 const PROMPT = { text: '안녕, 이 파일 좀 봐줘', origin: { kind: 'composer' }, isExpanded: true } as const
 
@@ -102,3 +106,170 @@ for (const [bubbleWidth, spacer] of [['60%', '40%'], ['90%', '10%'], [undefined,
     expect(boxes(await ui.drawn())[1]?.props?.width).toBe(spacer)
   })
 }
+
+test('model ids read as the desktop app names them', () => {
+  expect(modelLabel('claude-opus-5-5[1m]')).toBe('Opus 5.5 · 1M')
+  expect(modelLabel('claude-haiku-4-5-20251001')).toBe('Haiku 4.5')
+  expect(modelLabel('claude-fable-5-1')).toBe('Fable 5.1')
+  expect(modelLabel('opus')).toBe('Opus')
+  expect(modelLabel('gpt-x')).toBe('gpt-x')
+})
+
+test('the context fill is ten cells', () => {
+  expect(fill(0)).toEqual(['', '──────────'])
+  expect(fill(23)).toEqual(['━━', '────────'])
+  expect(fill(100)).toEqual(['━━━━━━━━━━', ''])
+})
+
+const BAND = {
+  hasSurvey: false,
+  isWorking: false,
+  maxRows: 10,
+  bodyColumns: 80,
+  scroll: { offset: 0, bodyRows: 9 },
+  view: {},
+} as const
+
+// The test's hooks stand for the engine; all of them go in before the first $ call.
+const engineFor = (on: On, extra?: (on: On) => void) => {
+  on('ui.render', ($, e) => {
+    const { Text } = $.ui.resolve(e)
+    return <Text>ENGINE</Text>
+  })
+  on('session.start', () => ({ cwd: '/tmp' }))
+  on('session.model', () => ({ value: 'claude-haiku-4-5-20251001' }))
+  on('session.usage', () => ({ value: { startedAt: 0, context: { window: 200_000 }, rateLimits: [], cost: { usd: 0 } } }))
+  on('session.measure', (_$, e) => ({ changed: e.changed }))
+  on('session.id', () => ({ value: 's1' }))
+  extra?.(on)
+}
+
+const start = ($: Engine) =>
+  $.session.start({ source: 'startup', cwd: '/tmp', surface: 'terminal', isInteractive: true } as never)
+
+const bandText = async ($: Engine, surface: 'terminal' | 'desktop' = 'terminal', props: object = BAND) => {
+  const ui = await $.ui.mount({ plugin: 'desktop-look', surface, component: 'AbovePrompt', props } as never)
+  return texts(await ui.drawn()).join(' ')
+}
+
+test('terminal: the band shows the model as the session starts', { options: { bandModel: true, bandContext: true } }, async ($, on) => {
+  engineFor(on)
+  await start($)
+  const shown = await bandText($)
+  expect(shown).toContain('◆ Haiku 4.5')
+  expect(shown).not.toContain('━')
+  expect(shown).toContain('ENGINE')
+})
+
+test('terminal: the band follows the main loop\'s model and the measured context', { options: { bandModel: true, bandContext: true } }, async ($, on) => {
+  engineFor(on, on =>
+    on('turn.step', async function* (_$, e) {
+      return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stop: { reason: 'end_turn' } } as never
+    }),
+  )
+  await start($)
+  for await (const _ of $.turn.step({ turnId: 't1', index: 0, model: 'claude-opus-5-5[1m]', effort: 'xhigh', messageCount: 1 } as never)) void _
+  await $.session.measure({ context: { tokens: 230_000, window: 1_000_000, percent: 23 }, rateLimits: [], changed: ['context'] })
+  const shown = await bandText($)
+  expect(shown).toContain('◆ Opus 5.5 · 1M · xhigh')
+  expect(shown).toMatch(/━━ +──────── +23% · 230k\/1M/)
+  expect(shown).toContain('230k/1M')
+})
+
+test('terminal: the band counts tool calls while they run', async ($, on) => {
+  let release = () => {}
+  const held = new Promise<void>(r => (release = r))
+  engineFor(on, on =>
+    on('tool.call', async () => {
+      await held
+      return { result: { stdout: '', stderr: '' } } as never
+    }),
+  )
+  const clock = mock.clock(on)
+  await start($)
+  const call = $.tool.call({ tool: 'Bash', command: 'true' } as never)
+  await clock.advance(0)
+  expect(await bandText($)).toContain('↻ Bash')
+  release()
+  await call
+  expect(await bandText($)).not.toContain('running')
+})
+
+test('terminal: a survey keeps the band for itself', { options: { bandModel: true } }, async ($, on) => {
+  engineFor(on)
+  await start($)
+  expect(await bandText($, 'terminal', { ...BAND, hasSurvey: true })).toBe('ENGINE')
+})
+
+test('desktop: the band is left to the app', { options: { bandModel: true } }, async ($, on) => {
+  engineFor(on)
+  await start($)
+  expect(await bandText($, 'desktop')).toBe('ENGINE')
+})
+
+test('terminal: showBand off leaves the band alone', { options: { showBand: false } }, async ($, on) => {
+  engineFor(on)
+  await start($)
+  expect(await bandText($)).toBe('ENGINE')
+})
+
+test('terminal: by default the band shows only tools running', async ($, on) => {
+  let release = () => {}
+  const held = new Promise<void>(r => (release = r))
+  engineFor(on, on =>
+    on('tool.call', async () => {
+      await held
+      return { result: { stdout: '', stderr: '' } } as never
+    }),
+  )
+  const clock = mock.clock(on)
+  await start($)
+  await $.session.measure({ context: { tokens: 230_000, window: 1_000_000, percent: 23 }, rateLimits: [], changed: ['context'] })
+  expect(await bandText($)).toBe('ENGINE')
+  const call = $.tool.call({ tool: 'Bash', command: 'true' } as never)
+  await clock.advance(0)
+  const shown = await bandText($)
+  expect(shown).toContain('↻ Bash')
+  expect(shown).not.toContain('◆')
+  expect(shown).not.toContain('━')
+  release()
+  await call
+  expect(await bandText($)).toBe('ENGINE')
+})
+
+test('an Edit or Write counts its patch lines; a new file counts its content', () => {
+  const patch = [{ oldStart: 1, oldLines: 2, newStart: 1, newLines: 3, lines: [' a', '-b', '+c', '+d'] }]
+  expect(diffStat('Edit', { filePath: '/x.ts', structuredPatch: patch })).toEqual({ file: '/x.ts', added: 2, removed: 1 })
+  expect(diffStat('Write', { type: 'create', filePath: '/y.ts', structuredPatch: [], content: 'one\ntwo\n' })).toEqual({ file: '/y.ts', added: 2, removed: 0 })
+  expect(diffStat('Bash', { stdout: '' })).toBeNull()
+})
+
+test('cost reads as the desktop app shows it', () => {
+  expect(dollars(0.004)).toBe('<$0.01')
+  expect(dollars(1.234)).toBe('$1.23')
+})
+
+test('terminal: the band tallies this session\'s edits and cost', async ($, on) => {
+  engineFor(on, on =>
+    on('tool.call', (_$, e) => {
+      const file = (e as unknown as { file_path: string }).file_path
+      return { result: { filePath: file, structuredPatch: [{ lines: ['+x', '+y', '-z'] }] } } as never
+    }),
+  )
+  await start($)
+  await $.tool.call({ tool: 'Edit', file_path: '/a.ts' } as never)
+  await $.tool.call({ tool: 'Edit', file_path: '/a.ts' } as never)
+  await $.tool.call({ tool: 'Edit', file_path: '/b.ts' } as never)
+  await $.session.measure({ context: { window: 200_000 }, rateLimits: [], cost: { usd: 0.42 }, changed: ['cost'] })
+  const shown = await bandText($)
+  expect(shown).toMatch(/✎ 2 files +\+6 +-3/)
+  expect(shown).toContain('$0.42')
+  expect(shown).not.toContain('◆')
+})
+
+test('running tools read by name, and fall back to a count when there is no room', () => {
+  expect(toolLabel('mcp__claude_ai_Slack__slack_send_message')).toBe('slack_send_message')
+  expect(toolLabel('Bash')).toBe('Bash')
+  expect(runningLabel(['Read', 'Grep', 'Read', 'Read'], 40)).toBe('Read ×3, Grep')
+  expect(runningLabel(['Read', 'Grep', 'Read', 'Read'], 8)).toBe('4 running')
+})
