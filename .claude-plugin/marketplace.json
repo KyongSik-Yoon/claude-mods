@@ -13,6 +13,12 @@
       "source": "./smooth-stream",
       "description": "Reveal streaming assistant replies with a smooth typewriter effect",
       "version": "0.2.0"
+    },
+    {
+      "name": "desktop-look",
+      "source": "./desktop-look",
+      "description": "Make the terminal transcript look like the Claude Code desktop app: prompt bubbles and tool cards",
+      "version": "0.2.0"
     }
   ]
 }

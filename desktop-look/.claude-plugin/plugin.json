@@ -1,0 +1,21 @@
+{
+  "name": "desktop-look",
+  "version": "0.2.0",
+  "description": "Make the terminal transcript look like the Claude Code desktop app: prompt bubbles and tool cards",
+  "author": {
+    "name": "KyongSik-Yoon"
+  },
+  "userConfig": {
+    "bubbleWidth": {
+      "type": "string",
+      "title": "Bubble width",
+      "description": "How wide your own messages may grow, as a share of the terminal",
+      "options": [
+        "60%",
+        "75%",
+        "90%"
+      ],
+      "default": "75%"
+    }
+  }
+}
