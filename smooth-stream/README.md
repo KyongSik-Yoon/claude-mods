@@ -18,7 +18,7 @@ Then run `/reload-plugins` or start a new session. Requires a Claude Code build 
 
 ## Options
 
-Open `/config` and set `smooth-stream` → **Reveal speed**:
+Defaults to `normal`; no setup needed. To change it, run `/plugin configure smooth-stream@kyongsik-mods` (or open `/config`) and set **Reveal speed**:
 
 | Value | Feel |
 | --- | --- |
