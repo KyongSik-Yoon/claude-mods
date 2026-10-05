@@ -1,0 +1,9 @@
+{
+  "name": "smooth-stream",
+  "version": "0.1.0",
+  "description": "Reveal streaming assistant replies with a smooth typewriter effect",
+  "author": {
+    "name": "KyongSik-Yoon"
+  },
+  "types": "./types/index.d.ts"
+}

@@ -1,0 +1,18 @@
+{
+  "name": "kyongsik-mods",
+  "owner": {
+    "name": "KyongSik-Yoon",
+    "email": "sam1287@gmail.com"
+  },
+  "metadata": {
+    "description": "Claude Code mods by KyongSik-Yoon"
+  },
+  "plugins": [
+    {
+      "name": "smooth-stream",
+      "source": "./smooth-stream",
+      "description": "Reveal streaming assistant replies with a smooth typewriter effect",
+      "version": "0.1.0"
+    }
+  ]
+}
