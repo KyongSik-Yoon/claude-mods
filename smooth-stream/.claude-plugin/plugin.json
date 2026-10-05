@@ -1,9 +1,22 @@
 {
   "name": "smooth-stream",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Reveal streaming assistant replies with a smooth typewriter effect",
   "author": {
     "name": "KyongSik-Yoon"
   },
-  "types": "./types/index.d.ts"
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "speed": {
+      "type": "string",
+      "title": "Reveal speed",
+      "description": "How fast streamed replies type themselves out",
+      "options": [
+        "slow",
+        "normal",
+        "fast"
+      ],
+      "default": "normal"
+    }
+  }
 }

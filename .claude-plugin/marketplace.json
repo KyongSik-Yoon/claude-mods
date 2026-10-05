@@ -12,7 +12,7 @@
       "name": "smooth-stream",
       "source": "./smooth-stream",
       "description": "Reveal streaming assistant replies with a smooth typewriter effect",
-      "version": "0.1.0"
+      "version": "0.2.0"
     }
   ]
 }

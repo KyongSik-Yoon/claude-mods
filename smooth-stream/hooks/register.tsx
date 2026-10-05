@@ -2,11 +2,17 @@ import type { Register } from 'claude-code'
 
 const SHOWN = { plugin: 'smooth-stream', key: 'shown' } as const
 
-// ~30 frames/s. Each frame reveals at least MIN_STEP chars, more when the
-// backlog is large, so a burst of lines drains within CATCH_UP_FRAMES.
+// ~30 frames/s. Each frame reveals at least minStep chars, more when the
+// backlog is large, so a burst of lines drains within catchUpFrames.
 const FRAME_MS = 33
-const MIN_STEP = 2
-const CATCH_UP_FRAMES = 12
+
+type Pace = { minStep: number; catchUpFrames: number }
+
+export const PACES = {
+  slow: { minStep: 1, catchUpFrames: 24 },
+  normal: { minStep: 2, catchUpFrames: 12 },
+  fast: { minStep: 4, catchUpFrames: 6 },
+} satisfies Record<string, Pace>
 
 type Track = { target: number; shown: number }
 
@@ -16,10 +22,11 @@ export const cut = (text: string, n: number): string => {
   return text.slice(0, code >= 0xd800 && code <= 0xdbff ? n - 1 : n)
 }
 
-export const step = (t: Track): number =>
-  Math.min(t.target, t.shown + Math.max(MIN_STEP, Math.ceil((t.target - t.shown) / CATCH_UP_FRAMES)))
+export const step = (t: Track, pace: Pace = PACES.normal): number =>
+  Math.min(t.target, t.shown + Math.max(pace.minStep, Math.ceil((t.target - t.shown) / pace.catchUpFrames)))
 
-export const register: Register = on => {
+export const register: Register = (on, options) => {
+  const pace: Pace = Object.hasOwn(PACES, String(options.speed)) ? PACES[options.speed as keyof typeof PACES] : PACES.normal
   // Messages still being revealed, by message id.
   const tracks = new Map<string, Track>()
   // Messages drawn whole; a redraw (resize, scroll) must not replay them.
@@ -37,7 +44,7 @@ export const register: Register = on => {
           }
           continue
         }
-        t.shown = step(t)
+        t.shown = step(t, pace)
         void $.state.set({ ...SHOWN, id }, t.shown)
       }
     })

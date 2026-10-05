@@ -1,6 +1,6 @@
 import { expect, mock, test } from 'claude-code/testing'
 
-import { cut, step } from './register'
+import { PACES, cut, step } from './register'
 
 const FULL = '안녕하세요. 이 문장은 부드럽게 한 글자씩 나타나야 합니다. '.repeat(4)
 
@@ -13,6 +13,13 @@ test('step reveals at least two chars and drains a backlog in ~12 frames', () =>
   expect(step({ target: 100, shown: 99 })).toBe(100)
   expect(step({ target: 10, shown: 0 })).toBe(2)
   expect(step({ target: 1200, shown: 0 })).toBe(100)
+})
+
+test('slow and fast paces reveal fewer and more chars per frame', () => {
+  expect(step({ target: 10, shown: 0 }, PACES.slow)).toBe(1)
+  expect(step({ target: 1200, shown: 0 }, PACES.slow)).toBe(50)
+  expect(step({ target: 10, shown: 0 }, PACES.fast)).toBe(4)
+  expect(step({ target: 1200, shown: 0 }, PACES.fast)).toBe(200)
 })
 
 for (const surface of ['terminal', 'desktop'] as const) {
@@ -79,3 +86,47 @@ for (const surface of ['terminal', 'desktop'] as const) {
     expect((await ui.find({ type: 'Text' }))?.text).toBe(FULL)
   })
 }
+
+// Characters shown after a few frames of a streaming reply, under a given speed.
+const shownAfterFrames = (speed: string) => {
+  let length = 0
+  test(`terminal: speed ${speed} is read from the plugin's options`, { options: { speed } }, async ($, on) => {
+    on('ui.render', { component: 'AssistantMessage' }, ($, e) => {
+      const { Text } = $.ui.resolve(e)
+      return <Text>{e.props.text}</Text>
+    })
+    let release = () => {}
+    const held = new Promise<void>(r => (release = r))
+    on('turn.step', async function* ($, e) {
+      await held
+      return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stop: { reason: 'end_turn' } } as never
+    })
+    const clock = mock.clock(on)
+    on('session.start', () => ({ cwd: '/tmp' }))
+    await $.session.start({ source: 'startup', cwd: '/tmp', surface: 'terminal', isInteractive: true } as never)
+    const stream = $.turn.step({ turnId: 't1', index: 0, model: 'm', messageCount: 1 } as never)
+    const pumped = (async () => {
+      for await (const _ of stream) void _
+    })()
+    await clock.advance(0)
+    const ui = await $.ui.mount({
+      plugin: 'smooth-stream',
+      surface: 'terminal',
+      component: 'AssistantMessage',
+      requestId: 'msg-1',
+      props: { text: FULL, isFirstOfReply: true },
+    })
+    await clock.advance(33 * 2)
+    length = ((await ui.find({ type: 'Text' }))?.text ?? '').length
+    expect(length).toBeGreaterThan(0)
+    release()
+    await pumped
+  })
+  return () => length
+}
+
+const slowLength = shownAfterFrames('slow')
+const fastLength = shownAfterFrames('fast')
+test('fast reveals more than slow in the same frames', () => {
+  expect(fastLength()).toBeGreaterThan(slowLength())
+})
