@@ -4,7 +4,7 @@ A Claude Code mod that makes the terminal transcript look more like the desktop 
 
 ![Before and after, the info band, running and failed states](../docs/desktop-look.png)
 
-- **Prompt bubbles**: your own messages sit on the right in a rounded bubble, wrapping at a share of the terminal width
+- **Prompt bubbles**: your own messages sit on the right in a rounded bubble, their text in the theme's blue, wrapping at a share of the terminal width
 - **Tool cards**: a tool call, its live progress and its result share one rail down the left edge, so they read as one card
 - **State at a glance**: the rail is blue while a call runs, red when it errored, was refused at the dialog or was interrupted, and dim once done
 - The engine still draws everything inside a card, so each tool's own summary and diff are unchanged
@@ -30,7 +30,7 @@ No setup needed. To change one, run `/plugin configure desktop-look@kyongsik-mod
 | Bubble width | `75%` | `60%`, `75%` or `90%` of the terminal |
 | Info band | on | The band above the prompt |
 | Band: model | off | Model and effort, for a status line that does not show them |
-| Band: context | off | Context fill, for a status line that does not show it |
+| Band: context | off | Context fill, for a status line that does not show it: blue while calm, yellow from 300k tokens or 70%, red from 500k tokens or 90%, whichever comes first |
 
 The cost is what Claude Code computes at API prices; on a subscription it is not what you are billed.
 

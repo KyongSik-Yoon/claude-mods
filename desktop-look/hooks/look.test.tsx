@@ -2,7 +2,7 @@ import type { On, RenderElement, RenderNode } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 
-import { diffStat, dollars, fill, modelLabel, runningLabel, toolLabel } from './register'
+import { diffStat, dollars, fill, modelLabel, pressure, runningLabel, toolLabel } from './register'
 
 // Every element of a drawn tree, outermost first.
 const walk = (node: RenderNode): RenderElement[] =>
@@ -38,6 +38,8 @@ for (const surface of ['terminal', 'desktop'] as const) {
       expect(boxes(tree).some(b => b.props?.borderStyle === 'round')).toBe(true)
       expect(boxes(tree)[0]?.props?.justifyContent).toBe('flex-end')
       expect(texts(tree)).toEqual([PROMPT.text])
+      const shown = walk(tree).find(n => n.type === 'Text')
+      expect(shown?.type === 'Text' ? shown.props?.color : undefined).toBe('suggestion')
     } else {
       expect(texts(tree)).toEqual(['ENGINE'])
     }
@@ -272,4 +274,14 @@ test('running tools read by name, and fall back to a count when there is no room
   expect(toolLabel('Bash')).toBe('Bash')
   expect(runningLabel(['Read', 'Grep', 'Read', 'Read'], 40)).toBe('Read ×3, Grep')
   expect(runningLabel(['Read', 'Grep', 'Read', 'Read'], 8)).toBe('4 running')
+})
+
+
+test('context pressure follows the tokens held, or the window share, whichever bites first', () => {
+  expect(pressure({ tokens: 230_000, window: 1_000_000, percent: 23 })).toBe('calm')
+  expect(pressure({ tokens: 300_000, window: 1_000_000, percent: 30 })).toBe('warn')
+  expect(pressure({ tokens: 500_000, window: 1_000_000, percent: 50 })).toBe('alert')
+  expect(pressure({ tokens: 140_000, window: 200_000, percent: 70 })).toBe('warn')
+  expect(pressure({ tokens: 180_000, window: 200_000, percent: 90 })).toBe('alert')
+  expect(pressure({ window: 200_000 })).toBe('calm')
 })

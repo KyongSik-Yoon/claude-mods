@@ -12,6 +12,10 @@ const RAIL = Array.from({ length: 400 }, () => '▎').join('\n')
 
 const WIDTHS = ['60%', '75%', '90%'] as const
 
+// The theme's own blue, so the prompt stands out in either: rgb(87,105,247) in
+// light, rgb(177,185,249) in dark.
+const PROMPT_COLOR = 'suggestion'
+
 type Tone = 'done' | 'running' | 'failed'
 
 const MODEL = atom({ plugin: 'desktop-look', key: 'model' } as const, null)
@@ -65,6 +69,20 @@ export const modelLabel = (id: string): string => {
   const version = m[2] ? ` ${m[2]}${m[3] ? `.${m[3]}` : ''}` : ''
   return `${family}${version}${/\[1m\]/i.test(id) ? ' · 1M' : ''}`
 }
+
+// How full the context is, by whichever bites first: the tokens held (a long
+// context dulls the model well before a 1M window fills), or the window's
+// share (a 200k window nears compaction).
+export const pressure = (context: Context): 'calm' | 'warn' | 'alert' => {
+  const tokens = context.tokens ?? 0
+  const percent = context.percent ?? 0
+  if (tokens >= 500_000 || percent >= 90) return 'alert'
+  if (tokens >= 300_000 || percent >= 70) return 'warn'
+  return 'calm'
+}
+
+// Calm in the theme's blue, the prompt's own; then the warning colours.
+const SHADES = { calm: { color: PROMPT_COLOR }, warn: { color: 'yellow' }, alert: { color: 'red' } } as const
 
 const short = (n: number): string =>
   n >= 1e6 ? `${+(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${Math.round(n / 1e3)}k` : `${n}`
@@ -211,7 +229,7 @@ export const register: Register = (on, options) => {
       right.push(<Text color="blue">↻ {runningLabel(tools, room)}</Text>)
     }
     if (context?.percent !== undefined) {
-      const shade = context.percent >= 90 ? { color: 'red' } : context.percent >= 70 ? { color: 'yellow' } : { dimColor: true }
+      const shade = SHADES[pressure(context)]
       const [filled, empty] = fill(context.percent)
       right.push(
         <Text>
@@ -245,7 +263,9 @@ export const register: Register = (on, options) => {
       <Box flexDirection="row" justifyContent="flex-end" marginTop={1}>
         <Box width={spacer} flexShrink={0} />
         <Box flexShrink={1} borderStyle="round" borderDimColor paddingX={1}>
-          <Text wrap="wrap">{e.props.text}</Text>
+          <Text color={PROMPT_COLOR} wrap="wrap">
+            {e.props.text}
+          </Text>
         </Box>
       </Box>
     )
