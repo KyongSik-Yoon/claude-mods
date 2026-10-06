@@ -16,6 +16,9 @@ const WIDTHS = ['60%', '75%', '90%'] as const
 // light, rgb(177,185,249) in dark.
 const PROMPT_COLOR = 'suggestion'
 
+// Half a cell wide, a step bolder than a tool card's rail.
+const PROMPT_RAIL = Array.from({ length: 400 }, () => '▌').join('\n')
+
 type Tone = 'done' | 'running' | 'failed'
 
 const MODEL = atom({ plugin: 'desktop-look', key: 'model' } as const, null)
@@ -255,18 +258,23 @@ export const register: Register = (on, options) => {
     )
   })
 
-  // The person's prompt as a right-aligned bubble, at most `width` wide.
+  // The person's prompt on the reply's own left edge, so a wide screen does
+  // not carry it out of sight: a blue rail, as a tool card has, one row per
+  // row of text; at most `width` wide.
   on('ui.render', { component: 'UserMessage' }, ($, e, next) => {
     if (e.surface !== 'terminal' || !OWN.has(e.props.origin.kind) || e.props.from || e.props.task) return next(e)
     const { Box, Text } = $.ui.resolve(e)
     return (
-      <Box flexDirection="row" justifyContent="flex-end" marginTop={1}>
-        <Box width={spacer} flexShrink={0} />
-        <Box flexShrink={1} borderStyle="round" borderDimColor paddingX={1}>
+      <Box flexDirection="row" marginTop={1}>
+        <Box flexShrink={1} paddingLeft={2}>
+          <Box position="absolute" left={0} top={0} bottom={0} width={1} overflow="hidden">
+            <Text color={PROMPT_COLOR}>{PROMPT_RAIL}</Text>
+          </Box>
           <Text color={PROMPT_COLOR} wrap="wrap">
             {e.props.text}
           </Text>
         </Box>
+        <Box width={spacer} flexShrink={0} />
       </Box>
     )
   })

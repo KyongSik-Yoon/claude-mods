@@ -35,11 +35,12 @@ for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount({ plugin: 'desktop-look', surface, component: 'UserMessage', props: PROMPT })
     const tree = await ui.drawn()
     if (surface === 'terminal') {
-      expect(boxes(tree).some(b => b.props?.borderStyle === 'round')).toBe(true)
-      expect(boxes(tree)[0]?.props?.justifyContent).toBe('flex-end')
-      expect(texts(tree)).toEqual([PROMPT.text])
-      const shown = walk(tree).find(n => n.type === 'Text')
-      expect(shown?.type === 'Text' ? shown.props?.color : undefined).toBe('suggestion')
+      expect(boxes(tree).some(b => b.props?.borderStyle !== undefined)).toBe(false)
+      expect(texts(tree)).toContain(PROMPT.text)
+      const rail = boxes(tree).find(b => b.props?.position === 'absolute')
+      expect(rail?.props).toMatchObject({ left: 0, top: 0, bottom: 0, width: 1 })
+      const colours = walk(tree).flatMap(n => (n.type === 'Text' ? [n.props?.color] : []))
+      expect(colours).toEqual(['suggestion', 'suggestion'])
     } else {
       expect(texts(tree)).toEqual(['ENGINE'])
     }
@@ -105,7 +106,7 @@ for (const [bubbleWidth, spacer] of [['60%', '40%'], ['90%', '10%'], [undefined,
       return <Text>ENGINE</Text>
     })
     const ui = await $.ui.mount({ plugin: 'desktop-look', surface: 'terminal', component: 'UserMessage', props: PROMPT })
-    expect(boxes(await ui.drawn())[1]?.props?.width).toBe(spacer)
+    expect(boxes(await ui.drawn()).at(-1)?.props?.width).toBe(spacer)
   })
 }
 

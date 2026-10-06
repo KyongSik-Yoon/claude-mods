@@ -17,7 +17,7 @@ Then run `/reload-plugins` in a running session, or start a new one. Requires a 
 | Mod | Description |
 | --- | --- |
 | [smooth-stream](./smooth-stream) | Reveal streaming assistant replies with a smooth typewriter effect (~30 fps, catches up on large bursts, speed configurable). |
-| [desktop-look](./desktop-look) | Make the terminal transcript look like the desktop app: prompt bubbles on the right, tool calls and results as one card with a state-coloured rail, and an info band with this session's edits, cost and running tools. |
+| [desktop-look](./desktop-look) | Make the terminal transcript look like the desktop app: a blue rail on your own prompts, tool calls and results as one card with a state-coloured rail, and an info band with this session's edits, cost and running tools. |
 
 ## Update
 
