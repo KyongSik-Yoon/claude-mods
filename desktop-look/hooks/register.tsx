@@ -13,11 +13,6 @@ const WIDTHS = ['60%', '75%', '90%'] as const
 // rgb(177,185,249) in dark.
 const CALM_COLOR = 'suggestion'
 
-// The prompt's bubble, filled as the mobile app fills it (#F0EFEB there; the
-// theme's user-message grey, #F0F0F0 in light and a dark grey in dark). The
-// fill sets it apart without an edge.
-const BUBBLE_FILL = 'userMessageBackground'
-
 // The mobile app's soft grey bar beside the text between tool calls; the
 // theme's own shade, so it reads in light and dark.
 const NARRATION_COLOR = 'subtle'
@@ -614,7 +609,7 @@ export const register: Register = (on, options) => {
     )
   })
 
-  // The person's prompt as a filled bubble at the left edge, where the
+  // The person's prompt in a round bubble at the left edge, where the
   // engine's row for a pasted image (`⎿ [Image #1]`), which no hook reaches,
   // sits under it; at most `width` of the terminal wide.
   on('ui.render', { component: 'UserMessage' }, ($, e, next) => {
@@ -622,7 +617,7 @@ export const register: Register = (on, options) => {
     const { Box, Text } = $.ui.resolve(e)
     return (
       <Box flexDirection="row" marginTop={1}>
-        <Box flexShrink={1} backgroundColor={BUBBLE_FILL} paddingX={1}>
+        <Box flexShrink={1} borderStyle="round" borderDimColor paddingX={1}>
           <Text wrap="wrap">
             {e.props.text}
           </Text>

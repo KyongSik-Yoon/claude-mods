@@ -65,12 +65,13 @@ for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount({ plugin: 'desktop-look', surface, component: 'UserMessage', props: PROMPT })
     const tree = await ui.drawn()
     if (surface === 'terminal') {
-      expect(boxes(tree).some(b => b.props?.borderStyle !== undefined)).toBe(false)
-      const bubble = boxes(tree).find(b => b.props?.backgroundColor !== undefined)
-      expect(bubble?.props).toMatchObject({ backgroundColor: 'userMessageBackground', paddingX: 1 })
+      // An edge, no fill: at the left edge the bubble's outline sets it apart.
+      const bubble = boxes(tree).find(b => b.props?.borderStyle !== undefined)
+      expect(bubble?.props).toMatchObject({ borderStyle: 'round', borderDimColor: true, paddingX: 1 })
+      expect(boxes(tree).some(b => b.props?.backgroundColor !== undefined)).toBe(false)
       expect(texts(tree)).toEqual([PROMPT.text])
       expect(bars(tree)).toEqual([])
-      // The text in the terminal's own colour: the bubble's fill sets it apart.
+      // The text in the terminal's own colour.
       expect(walk(tree).find(n => n.type === 'Text')?.props?.color).toBeUndefined()
     } else {
       expect(texts(tree)).toEqual(['ENGINE'])
@@ -445,7 +446,7 @@ for (const [bubbleWidth, spacer] of [['60%', '40%'], ['90%', '10%'], [undefined,
     // The room right of the bubble, at least this: the bubble keeps to the left edge.
     const row = boxes(await ui.drawn())[0]!
     const [bubble, room] = (row.children ?? []).filter((n): n is BoxElement => typeof n !== 'string' && n.type === 'Box')
-    expect(bubble?.props?.backgroundColor).toBe('userMessageBackground')
+    expect(bubble?.props?.borderStyle).toBe('round')
     expect(room?.props).toMatchObject({ flexGrow: 1, minWidth: spacer })
   })
 }

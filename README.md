@@ -17,7 +17,7 @@ Then run `/reload-plugins` in a running session, or start a new one. Requires a 
 | Mod | Description |
 | --- | --- |
 | [smooth-stream](./smooth-stream) | Reveal streaming assistant replies with a smooth typewriter effect (~30 fps, catches up on large bursts, speed configurable). |
-| [desktop-look](./desktop-look) | Lay the terminal transcript out as the Claude Code mobile and desktop apps do: your prompts in a filled bubble, each tool call as one line with a state mark (a click opens it), lists set in with bullets and hanging lines, the text between tool calls beside a grey bar, and an info band with this session's edits, cost and running tools. |
+| [desktop-look](./desktop-look) | Lay the terminal transcript out as the Claude Code mobile and desktop apps do: your prompts in a round bubble, each tool call as one line with a state mark (a click opens it), lists set in with bullets and hanging lines, the text between tool calls beside a grey bar, and an info band with this session's edits, cost and running tools. |
 
 ## Update
 
