@@ -214,30 +214,6 @@ export const callLabel = (tool: string, input: unknown, running: boolean): strin
   return what ? `${head} ${what}` : head
 }
 
-const textArg = (input: unknown, key: string): string => {
-  const value = typeof input === 'object' && input !== null ? (input as Record<string, unknown>)[key] : undefined
-  return typeof value === 'string' ? value.trim() : ''
-}
-
-// A Bash call's command as its first line; a longer script says there is more.
-const commandOf = (input: unknown): string => {
-  const [first = '', ...rest] = textArg(input, 'command').split('\n')
-  return rest.length > 0 ? `${first} …` : first
-}
-
-// The commands a line shows beside its label, so what ran is on screen and
-// not only the model's account of it: each Bash call's, unless the line is one
-// call with no description, whose label is its command already.
-export const commandsShown = (calls: readonly { tool: string; input: unknown }[]): string => {
-  const only = calls.length === 1 ? calls[0] : undefined
-  if (only && !(only.tool === 'Bash' && textArg(only.input, 'description'))) return ''
-  return calls
-    .filter(c => c.tool === 'Bash')
-    .map(c => commandOf(c.input))
-    .filter(Boolean)
-    .join('; ')
-}
-
 // A folded run of calls, counted as the engine's own line counts them:
 // `Read 2 files, ran 1 command`, in the order the kinds first came.
 const KINDS: Readonly<Record<string, readonly [running: string, done: string, one: string, many: string]>> = {
@@ -260,7 +236,7 @@ export const groupLabel = (calls: readonly { tool: string; input: unknown; isRun
   const said = [...counts.values()]
     .map(({ n, tool }) => {
       const kind = KINDS[tool]
-      if (!kind) return `${toolLabel(tool)} ×${n}`
+      if (!kind) return n > 1 ? `${toolLabel(tool)} ×${n}` : toolLabel(tool)
       return `${kind[running ? 0 : 1]} ${n} ${n === 1 ? kind[2] : kind[3]}`
     })
     .join(', ')
@@ -270,15 +246,6 @@ export const groupLabel = (calls: readonly { tool: string; input: unknown; isRun
 // Cells a string takes: two for Hangul, CJK and full-width forms, one otherwise.
 const WIDE = /[ᄀ-ᅟ⺀-꓏가-힣豈-﫿︰-﹏＀-｠￠-￦]/
 const cells = (s: string): number => [...s].reduce((n, ch) => n + (WIDE.test(ch) ? 2 : 1), 0)
-
-// A label and the commands beside it in one row of `room` cells, with the
-// three of ` $ ` between: the commands keep a share, the label the rest.
-export const fitLine = (label: string, command: string, room: number): [string, string] => {
-  if (!command) return [clip(label, room), '']
-  const share = Math.min(cells(command), Math.max(12, Math.floor(room * 0.45)))
-  const shown = clip(label, Math.max(8, room - 3 - share))
-  return [shown, clip(command, Math.max(4, room - 3 - cells(shown)))]
-}
 
 // One row's worth: cut to `room` cells with an ellipsis.
 export const clip = (s: string, room: number): string => {
@@ -734,7 +701,7 @@ export const register: Register = (on, options) => {
     const open = (await read($, member)) !== OPEN_BY_DEFAULT.has(tool)
     const toggle = () => void update($, member, v => !v)
     const room = Math.max(10, (e.viewport?.columns ?? 80) - 16)
-    const [label, command] = fitLine(callLabel(tool, input, isRunning), commandsShown([{ tool, input }]), room)
+    const label = clip(callLabel(tool, input, isRunning), room)
     const stat = isRunning || isErrored ? null : diffStat(tool, output)
     const mark = open ? '⌄' : '›'
     const tone: Tone = isErrored || isInterrupted ? 'failed' : isRunning ? 'running' : 'done'
@@ -752,12 +719,6 @@ export const register: Register = (on, options) => {
           ) : (
             <Button plain dimColor key="line" label={label} onPress={toggle} />
           )}
-          {command ? (
-            <Text>
-              <Text dimColor> $ </Text>
-              {command}
-            </Text>
-          ) : null}
           {stat ? (
             <Text>
               {' '}
@@ -800,7 +761,7 @@ export const register: Register = (on, options) => {
     const failed = calls.some(c => c.isErrored || c.isInterrupted)
     const tone: Tone = failed ? 'failed' : running ? 'running' : 'done'
     const room = Math.max(10, (e.viewport?.columns ?? 80) - 10)
-    const [label, command] = fitLine(groupLabel(calls), commandsShown(calls), room)
+    const label = clip(groupLabel(calls), room)
     return (
       <Box flexDirection="column" marginTop={1}>
         <Box flexDirection="row">
@@ -811,12 +772,6 @@ export const register: Register = (on, options) => {
           ) : (
             <Button plain dimColor key="line" label={label} onPress={() => void toggle()} />
           )}
-          {command ? (
-            <Text>
-              <Text dimColor> $ </Text>
-              {command}
-            </Text>
-          ) : null}
           <Text> </Text>
           <Button plain dimColor key="mark" label={open ? '⌄' : '›'} onPress={() => void toggle()} />
         </Box>

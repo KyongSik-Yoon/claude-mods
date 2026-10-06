@@ -6,10 +6,8 @@ import {
   between,
   callLabel,
   clip,
-  commandsShown,
   cut,
   diffStat,
-  fitLine,
   dollars,
   fill,
   groupLabel,
@@ -173,37 +171,18 @@ for (const [name, component, props, style] of MARKS) {
   })
 }
 
-test('terminal: a described command shows the command it ran beside the description', async ($, on) => {
+test('terminal: a line reads as its label alone, the command left to the opened row', async ($, on) => {
   engine(on)
   const tree = await (await mountTool($, 'ToolUse', TOOL.ToolUse)).drawn()
-  expect(labels(tree)[0]).toBe('Ran List files')
-  expect(texts(tree)).toEqual(expect.arrayContaining([' $ ', 'ls -la']))
-})
-
-test('terminal: a group shows each command it ran', async ($, on) => {
-  engine(on)
+  expect(labels(tree)).toEqual(['Ran List files', '›'])
+  expect(texts(tree).join('')).not.toContain('ls -la')
   const calls = [
-    { ...BASH, tool: 'Read', input: { file_path: '/a.ts' }, isRunning: false },
     { ...BASH, input: { command: 'wc -l a.ts' }, isRunning: false },
-    { ...BASH, input: { command: 'git status\ngit diff', description: 'Look at the tree' }, isRunning: false },
+    { ...BASH, input: { command: 'git status', description: 'Look at the tree' }, isRunning: false },
   ]
-  const tree = await (await mountTool($, 'ToolGroup', { ...TOOL.ToolGroup, calls })).drawn()
-  expect(texts(tree)).toContain('wc -l a.ts; git status …')
-})
-
-test('the commands beside a line, and how a row shares its room', () => {
-  const bash = (input: object) => ({ tool: 'Bash', input })
-  expect(commandsShown([bash({ command: 'ls', description: 'List' })])).toBe('ls')
-  // Without a description the label is the command already.
-  expect(commandsShown([bash({ command: 'ls' })])).toBe('')
-  expect(commandsShown([{ tool: 'Read', input: { file_path: '/a' } }])).toBe('')
-  expect(commandsShown([bash({ command: 'ls' }), { tool: 'Read', input: {} }, bash({ command: 'a\nb' })])).toBe('ls; a …')
-  expect(fitLine('Ran List files', '', 40)).toEqual(['Ran List files', ''])
-  expect(fitLine('Ran List files', 'ls -la', 40)).toEqual(['Ran List files', 'ls -la'])
-  // A long description gives way so the command keeps its share.
-  const [label, command] = fitLine('Ran ' + 'x'.repeat(60), 'y'.repeat(60), 40)
-  expect(command.length).toBeGreaterThanOrEqual(17)
-  expect(label.length + 3 + command.length).toBeLessThanOrEqual(40)
+  const group = await (await mountTool($, 'ToolGroup', { ...TOOL.ToolGroup, calls })).drawn()
+  expect(labels(group)).toEqual(['Ran 2 commands', '›'])
+  expect(texts(group).join('')).not.toContain('wc -l')
 })
 
 test('terminal: an interrupted call says so', async ($, on) => {
@@ -446,6 +425,11 @@ test('a call reads as the mobile app lists it', () => {
   expect(callLabel('mcp__claude_ai_Slack__slack_send_message', {}, false)).toBe('slack_send_message')
   expect(groupLabel([{ tool: 'Grep', input: {}, isRunning: false }, { tool: 'Glob', input: {}, isRunning: true }])).toBe('Searching 2 patterns')
   expect(groupLabel([{ tool: 'Read', input: { file_path: '/a.ts' }, isRunning: false }])).toBe('Read a.ts')
+  // Tools with no verb of their own read by name, counted only past one.
+  const asana = (tool: string) => ({ tool, input: {}, isRunning: false })
+  expect(groupLabel([asana('ToolSearch'), asana('mcp__asana__asana_search_tasks'), asana('mcp__asana__asana_search_tasks')])).toBe(
+    'ToolSearch, asana_search_tasks ×2',
+  )
 })
 
 test('a line is cut to its room, counting Hangul as two cells', () => {
