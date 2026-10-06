@@ -1,5 +1,5 @@
-import { atom, read, update } from 'claude-code'
-import type { PromptOrigin, Register, RenderInput, RenderNode } from 'claude-code'
+import { atom, memberOf, read, update } from 'claude-code'
+import type { PromptOrigin, Register, RenderNode } from 'claude-code'
 
 import type { Context, Edits, Model } from '../types'
 
@@ -7,25 +7,43 @@ import type { Context, Edits, Model } from '../types'
 // notifications, peers, channels) keeps the engine's row.
 const OWN: ReadonlySet<PromptOrigin['kind']> = new Set(['composer', 'bridge'])
 
-// Taller than any row; the rail's box clips it to the row's height.
-const RAIL = Array.from({ length: 400 }, () => '▎').join('\n')
-
 const WIDTHS = ['60%', '75%', '90%'] as const
 
-// The theme's own blue, so the prompt stands out in either: rgb(87,105,247) in
-// light, rgb(177,185,249) in dark.
-const PROMPT_COLOR = 'suggestion'
+// The theme's own blue, which reads in either: rgb(87,105,247) in light,
+// rgb(177,185,249) in dark.
+const CALM_COLOR = 'suggestion'
 
-// Half a cell wide, a step bolder than a tool card's rail.
-const PROMPT_RAIL = Array.from({ length: 400 }, () => '▌').join('\n')
+// The prompt's bubble, filled as the mobile app fills it (#F0EFEB there; the
+// theme's user-message grey, #F0F0F0 in light and a dark grey in dark). The
+// fill sets it apart without an edge.
+const BUBBLE_FILL = 'userMessageBackground'
 
-type Tone = 'done' | 'running' | 'failed'
+// The mobile app's soft grey bar beside the text between tool calls; the
+// theme's own shade, so it reads in light and dark.
+const NARRATION_COLOR = 'subtle'
+
+// Tools whose row is the point (the plan, the todo list, the answers given):
+// they start open, and a press folds them.
+const OPEN_BY_DEFAULT: ReadonlySet<string> = new Set(['TodoWrite', 'AskUserQuestion', 'ExitPlanMode'])
+
+// A tool line opens with a thin mark in its state's colour: blue while it
+// runs, red when it failed or was cut, green once it succeeded, as the stock
+// transcript's dot turns. A quarter cell, so it reads apart from the
+// narration's bar.
+type Tone = 'running' | 'failed' | 'done'
+const TONES = { running: { color: 'blue' }, failed: { color: 'red' }, done: { color: 'green' } } as const
+const STATE_MARK = '▎ '
 
 const MODEL = atom({ plugin: 'desktop-look', key: 'model' } as const, null)
 const CONTEXT = atom({ plugin: 'desktop-look', key: 'context' } as const, null)
 const TOOLS = atom({ plugin: 'desktop-look', key: 'tools' } as const, [] as string[])
 const EDITS = atom({ plugin: 'desktop-look', key: 'edits' } as const, null)
 const COST = atom({ plugin: 'desktop-look', key: 'cost' } as const, null)
+const NARRATION = atom({ plugin: 'desktop-look', key: 'narration' } as const, [] as string[])
+const OPEN = atom({ plugin: 'desktop-look', key: 'open' } as const, false)
+
+// Enough for a long session's worth of steps; older ones have scrolled away.
+const NARRATION_KEPT = 300
 
 type Patch = { lines: string[] }
 
@@ -84,8 +102,9 @@ export const pressure = (context: Context): 'calm' | 'warn' | 'alert' => {
   return 'calm'
 }
 
-// Calm in the theme's blue, the prompt's own; then the warning colours.
-const SHADES = { calm: { color: PROMPT_COLOR }, warn: { color: 'yellow' }, alert: { color: 'red' } } as const
+// Calm in the theme's blue; then the theme's warning and
+// error colours, which a light theme darkens (a named yellow glares there).
+const SHADES = { calm: { color: CALM_COLOR }, warn: { color: 'warning' }, alert: { color: 'error' } } as const
 
 const short = (n: number): string =>
   n >= 1e6 ? `${+(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${Math.round(n / 1e3)}k` : `${n}`
@@ -98,24 +117,181 @@ export const fill = (percent: number): [string, string] => {
   return ['━'.repeat(cells), '─'.repeat(10 - cells)]
 }
 
-// The rail's colour follows the call: running, failed (an error, a refusal at
-// the dialog, an interrupt) or done. Named colours, so the terminal's palette
-// picks the shade for a light or dark theme.
-export const tone = (e: RenderInput<'ToolUse' | 'ToolGroup' | 'ToolResult' | 'ToolProgress'>): Tone => {
-  switch (e.component) {
-    case 'ToolProgress':
-      return 'running'
-    case 'ToolUse':
-      return e.props.isErrored || e.props.isInterrupted ? 'failed' : e.props.isRunning ? 'running' : 'done'
-    case 'ToolGroup':
-      return e.props.calls.some(c => c.isErrored || c.isInterrupted)
-        ? 'failed'
-        : e.props.calls.some(c => c.isRunning)
-          ? 'running'
-          : 'done'
-    case 'ToolResult':
-      return e.props.isErrored ? 'failed' : 'done'
+// The model's text that sits between two tool calls of one turn: what the
+// mobile app draws beside a grey bar. The turn's opening line and its answer
+// stay plain. `pieces` are one turn's, or one step's, in order: a text block,
+// or null for a tool call; `toolBefore` when a call came earlier in the turn.
+export const between = (pieces: readonly (string | null)[], toolBefore = false): string[] => {
+  const last = pieces.lastIndexOf(null)
+  let before = toolBefore
+  const found: string[] = []
+  pieces.forEach((piece, at) => {
+    if (piece === null) before = true
+    else if (before && at < last && piece.trim()) found.push(piece.trim())
+  })
+  return found
+}
+
+type Block = { readonly type: string; readonly [field: string]: unknown }
+
+// The same, read off a transcript in Messages API form (blocks intact), turn
+// by turn: a person's prompt opens one; tool results carry it on.
+export const narrations = (messages: readonly { role: 'user' | 'assistant'; content: readonly Block[] }[]): string[] => {
+  const found: string[] = []
+  let turn: (string | null)[] = []
+  for (const m of messages) {
+    if (m.role === 'user') {
+      if (!m.content.some(b => b.type === 'tool_result')) {
+        found.push(...between(turn))
+        turn = []
+      }
+      continue
+    }
+    for (const b of m.content) {
+      if (b.type === 'tool_use') turn.push(null)
+      else if (b.type === 'text' && typeof b.text === 'string') turn.push(b.text)
+    }
   }
+  found.push(...between(turn))
+  return found.slice(-NARRATION_KEPT)
+}
+
+// What a call did, as the mobile app's one line says it: `Ran <what the
+// command is for>`, `Read register.tsx`; a running call in the present tense.
+const VERBS: Readonly<Record<string, readonly [running: string, done: string]>> = {
+  Bash: ['Running', 'Ran'],
+  Read: ['Reading', 'Read'],
+  Edit: ['Editing', 'Edited'],
+  MultiEdit: ['Editing', 'Edited'],
+  NotebookEdit: ['Editing', 'Edited'],
+  Write: ['Writing', 'Wrote'],
+  Grep: ['Searching for', 'Searched for'],
+  Glob: ['Finding', 'Found'],
+  WebFetch: ['Fetching', 'Fetched'],
+  WebSearch: ['Searching the web for', 'Searched the web for'],
+  Agent: ['Running agent', 'Ran agent'],
+  Task: ['Running agent', 'Ran agent'],
+  Skill: ['Loading skill', 'Loaded skill'],
+  TodoWrite: ['Updating todos', 'Updated todos'],
+}
+
+const basename = (path: string): string => path.split('/').filter(Boolean).pop() ?? path
+
+// The call's object: a command's description, a file's name, a pattern.
+const subject = (tool: string, input: unknown): string => {
+  const args = (typeof input === 'object' && input !== null ? input : {}) as Record<string, unknown>
+  const arg = (key: string): string => (typeof args[key] === 'string' ? (args[key] as string) : '')
+  switch (tool) {
+    case 'Bash':
+      return arg('description') || (arg('command').split('\n')[0] ?? '')
+    case 'Read':
+    case 'Edit':
+    case 'MultiEdit':
+    case 'Write':
+      return basename(arg('file_path'))
+    case 'NotebookEdit':
+      return basename(arg('notebook_path'))
+    case 'Grep':
+    case 'Glob':
+      return arg('pattern')
+    case 'WebFetch':
+      return /^[a-z]+:\/\/([^/?#]+)/i.exec(arg('url'))?.[1] ?? arg('url')
+    case 'WebSearch':
+      return arg('query')
+    case 'Skill':
+      return arg('skill')
+    case 'TodoWrite':
+      return ''
+    default:
+      return arg('description')
+  }
+}
+
+export const callLabel = (tool: string, input: unknown, running: boolean): string => {
+  const verbs = VERBS[tool]
+  const head = verbs ? verbs[running ? 0 : 1] : toolLabel(tool)
+  const what = subject(tool, input).trim()
+  return what ? `${head} ${what}` : head
+}
+
+const textArg = (input: unknown, key: string): string => {
+  const value = typeof input === 'object' && input !== null ? (input as Record<string, unknown>)[key] : undefined
+  return typeof value === 'string' ? value.trim() : ''
+}
+
+// A Bash call's command as its first line; a longer script says there is more.
+const commandOf = (input: unknown): string => {
+  const [first = '', ...rest] = textArg(input, 'command').split('\n')
+  return rest.length > 0 ? `${first} …` : first
+}
+
+// The commands a line shows beside its label, so what ran is on screen and
+// not only the model's account of it: each Bash call's, unless the line is one
+// call with no description, whose label is its command already.
+export const commandsShown = (calls: readonly { tool: string; input: unknown }[]): string => {
+  const only = calls.length === 1 ? calls[0] : undefined
+  if (only && !(only.tool === 'Bash' && textArg(only.input, 'description'))) return ''
+  return calls
+    .filter(c => c.tool === 'Bash')
+    .map(c => commandOf(c.input))
+    .filter(Boolean)
+    .join('; ')
+}
+
+// A folded run of calls, counted as the engine's own line counts them:
+// `Read 2 files, ran 1 command`, in the order the kinds first came.
+const KINDS: Readonly<Record<string, readonly [running: string, done: string, one: string, many: string]>> = {
+  Read: ['reading', 'read', 'file', 'files'],
+  Bash: ['running', 'ran', 'command', 'commands'],
+  Grep: ['searching', 'searched', 'pattern', 'patterns'],
+  Glob: ['searching', 'searched', 'pattern', 'patterns'],
+}
+
+export const groupLabel = (calls: readonly { tool: string; input: unknown; isRunning: boolean }[]): string => {
+  const running = calls.some(c => c.isRunning)
+  // One call reads as the call itself: `Ran <what for>`, not `Ran 1 command`.
+  if (calls.length === 1) return callLabel(calls[0]!.tool, calls[0]!.input, running)
+  const counts = new Map<string, { n: number; tool: string }>()
+  for (const c of calls) {
+    const kind = KINDS[c.tool] ? KINDS[c.tool]![1] : c.tool
+    const seen = counts.get(kind)
+    counts.set(kind, { n: (seen?.n ?? 0) + 1, tool: seen?.tool ?? c.tool })
+  }
+  const said = [...counts.values()]
+    .map(({ n, tool }) => {
+      const kind = KINDS[tool]
+      if (!kind) return `${toolLabel(tool)} ×${n}`
+      return `${kind[running ? 0 : 1]} ${n} ${n === 1 ? kind[2] : kind[3]}`
+    })
+    .join(', ')
+  return said.charAt(0).toUpperCase() + said.slice(1)
+}
+
+// Cells a string takes: two for Hangul, CJK and full-width forms, one otherwise.
+const WIDE = /[ᄀ-ᅟ⺀-꓏가-힣豈-﫿︰-﹏＀-｠￠-￦]/
+const cells = (s: string): number => [...s].reduce((n, ch) => n + (WIDE.test(ch) ? 2 : 1), 0)
+
+// A label and the commands beside it in one row of `room` cells, with the
+// three of ` $ ` between: the commands keep a share, the label the rest.
+export const fitLine = (label: string, command: string, room: number): [string, string] => {
+  if (!command) return [clip(label, room), '']
+  const share = Math.min(cells(command), Math.max(12, Math.floor(room * 0.45)))
+  const shown = clip(label, Math.max(8, room - 3 - share))
+  return [shown, clip(command, Math.max(4, room - 3 - cells(shown)))]
+}
+
+// One row's worth: cut to `room` cells with an ellipsis.
+export const clip = (s: string, room: number): string => {
+  if (cells(s) <= room) return s
+  let out = ''
+  let used = 0
+  for (const ch of s) {
+    const w = WIDE.test(ch) ? 2 : 1
+    if (used + w > room - 1) break
+    out += ch
+    used += w
+  }
+  return `${out}…`
 }
 
 export const register: Register = (on, options) => {
@@ -129,22 +305,47 @@ export const register: Register = (on, options) => {
   // engine (each main-loop step, each measurement, each tool call).
   on('session.start', async ($, e, next) => {
     const started = await next(e)
-    const [id, usage, session] = await Promise.all([$.session.model(), $.session.usage(), $.session.id()])
+    const [id, usage, session, messages] = await Promise.all([
+      $.session.model(),
+      $.session.usage(),
+      $.session.id(),
+      $.session.messages({ as: 'api' }),
+    ])
     await update($, MODEL, model => model ?? { id })
     await update($, CONTEXT, () => usage.context)
     await update($, COST, () => usage.cost?.usd ?? null)
     await update($, TOOLS, () => [])
+    // A resumed transcript's text between tool calls, read off the messages.
+    await update($, NARRATION, () => narrations(messages))
     // A reload keeps the session's tally; a new session (/clear) starts over.
     await update($, EDITS, edits => (edits?.session === session ? edits : { session, files: [], added: 0, removed: 0 }))
     return started
   })
 
   on('turn.step', async function* ($, e, next) {
-    if (!e.agentId) {
-      const model: Model = e.effort === undefined ? { id: e.model } : { id: e.model, effort: String(e.effort) }
-      await update($, MODEL, () => model)
+    if (e.agentId) return yield* next(e)
+    const model: Model = e.effort === undefined ? { id: e.model } : { id: e.model, effort: String(e.effort) }
+    await update($, MODEL, () => model)
+    // The response's blocks as they stream: each text, and where calls sit.
+    const blocks = new Map<number, string | null>()
+    const stream = next(e)
+    let item = await stream.next()
+    while (!item.done) {
+      const chunk = item.value
+      if (chunk.kind === 'text') blocks.set(chunk.index, (blocks.get(chunk.index) ?? '') + chunk.text)
+      else if (chunk.kind === 'tool') blocks.set(chunk.index, null)
+      yield chunk
+      item = await stream.next()
     }
-    return yield* next(e)
+    const step = item.value
+    const streamed = [...blocks].sort(([a], [b]) => a - b).map(([, piece]) => piece)
+    // A response a hook beneath answered whole streams no text: read it off
+    // the result, its text before its calls.
+    const pieces =
+      streamed.some(p => p !== null) || !step.answer.trim() ? streamed : [step.answer, ...step.toolUses.map(() => null)]
+    const said = between(pieces, e.index > 0)
+    if (said.length > 0) await update($, NARRATION, kept => [...kept, ...said].slice(-NARRATION_KEPT))
+    return step
   })
 
   on('session.measure', async ($, e, next) => {
@@ -258,46 +459,143 @@ export const register: Register = (on, options) => {
     )
   })
 
-  // The person's prompt on the reply's own left edge, so a wide screen does
-  // not carry it out of sight: a blue rail, as a tool card has, one row per
-  // row of text; at most `width` wide.
+  // The person's prompt as a filled bubble on the right, as the
+  // desktop and mobile apps set it; at most `width` of the terminal wide.
   on('ui.render', { component: 'UserMessage' }, ($, e, next) => {
     if (e.surface !== 'terminal' || !OWN.has(e.props.origin.kind) || e.props.from || e.props.task) return next(e)
     const { Box, Text } = $.ui.resolve(e)
     return (
       <Box flexDirection="row" marginTop={1}>
-        <Box flexShrink={1} paddingLeft={2}>
-          <Box position="absolute" left={0} top={0} bottom={0} width={1} overflow="hidden">
-            <Text color={PROMPT_COLOR}>{PROMPT_RAIL}</Text>
-          </Box>
-          <Text color={PROMPT_COLOR} wrap="wrap">
+        <Box flexGrow={1} minWidth={spacer} />
+        <Box flexShrink={1} backgroundColor={BUBBLE_FILL} paddingX={1}>
+          <Text wrap="wrap">
             {e.props.text}
           </Text>
         </Box>
-        <Box width={spacer} flexShrink={0} />
       </Box>
     )
   })
 
-  // A tool row, its live progress and its result are separate sites; one rail
-  // down their left edge reads them as one card. The engine still draws what
-  // is inside, so each tool's own summary and diff stay as they are. A tool
-  // row opens with a blank line of the engine's, which the rail skips.
-  on('ui.render', { component: ['ToolUse', 'ToolGroup', 'ToolProgress', 'ToolResult'] }, async ($, e, next) => {
+  // The reply's text without the bullet, flush left as the mobile app sets it;
+  // the text between two tool calls beside a grey bar. The engine still draws
+  // the markdown, so another mod that rewrites the text composes with this.
+  on('ui.render', { component: 'AssistantMessage' }, async ($, e, next) => {
     if (e.surface !== 'terminal') return next(e)
-    const { Box, Text } = $.ui.resolve(e)
-    const skip = e.component === 'ToolUse' || e.component === 'ToolGroup' ? 1 : 0
-    const now = tone(e)
+    const plain = { ...e, props: { ...e.props, isFirstOfReply: false } }
+    if (e.props.isSummary || !(await read($, NARRATION)).includes(e.props.text.trim())) return next(plain)
+    const { Box } = $.ui.resolve(e)
+    // The engine's drawing opens with a blank row, which the bar skips.
     return (
-      <Box paddingLeft={2}>
-        <Box position="absolute" left={0} top={skip} bottom={0} width={1} overflow="hidden">
-          {now === 'done' ? (
-            <Text dimColor>{RAIL}</Text>
-          ) : (
-            <Text color={now === 'running' ? 'blue' : 'red'}>{RAIL}</Text>
-          )}
+      <Box flexDirection="row">
+        <Box width={1} flexShrink={0} marginTop={1} backgroundColor={NARRATION_COLOR} />
+        <Box flexShrink={1} flexGrow={1} paddingLeft={1}>
+          {await next(plain)}
         </Box>
-        {await next(e)}
+      </Box>
+    )
+  })
+
+  // A tool call as one dim line, as the mobile app lists it: `Ran <what for> ›`;
+  // blue while it runs, a red mark when it failed. A click on the line opens
+  // the engine's own row (the command, the diff, the output) beneath it. On
+  // the main screen nothing takes a click, so the engine's rows stay.
+  on('ui.render', { component: 'ToolUse' }, async ($, e, next) => {
+    if (e.surface !== 'terminal' || e.viewport?.isFullscreen === false) return next(e)
+    const { Box, Text, Button } = $.ui.resolve(e)
+    const { tool, input, isErrored, isInterrupted, output } = e.props
+    // A call waiting at the permission dialog has no result yet either.
+    const isRunning = e.props.isRunning || (output === undefined && !isErrored && !isInterrupted)
+    const member = memberOf(OPEN, e)
+    const open = (await read($, member)) !== OPEN_BY_DEFAULT.has(tool)
+    const toggle = () => void update($, member, v => !v)
+    const room = Math.max(10, (e.viewport?.columns ?? 80) - 16)
+    const [label, command] = fitLine(callLabel(tool, input, isRunning), commandsShown([{ tool, input }]), room)
+    const stat = isRunning || isErrored ? null : diffStat(tool, output)
+    const mark = open ? '⌄' : '›'
+    const tone: Tone = isErrored || isInterrupted ? 'failed' : isRunning ? 'running' : 'done'
+    return (
+      <Box flexDirection="column" marginTop={1}>
+        <Box flexDirection="row">
+          <Text {...TONES[tone]}>{STATE_MARK}</Text>
+          {isInterrupted ? (
+            <Text dimColor>Interrupted · </Text>
+          ) : isErrored ? (
+            <Text color="red">✗ </Text>
+          ) : null}
+          {isRunning ? (
+            <Text color="blue">{label}…</Text>
+          ) : (
+            <Button plain dimColor key="line" label={label} onPress={toggle} />
+          )}
+          {command ? (
+            <Text>
+              <Text dimColor> $ </Text>
+              {command}
+            </Text>
+          ) : null}
+          {stat ? (
+            <Text>
+              {' '}
+              <Text color="green">+{String(stat.added)}</Text> <Text color="red">-{String(stat.removed)}</Text>
+            </Text>
+          ) : null}
+          <Text> </Text>
+          <Button plain dimColor key="mark" label={mark} onPress={toggle} />
+        </Box>
+        {open ? await next(e) : null}
+      </Box>
+    )
+  })
+
+  // The result under a standalone row: drawn while its row is open.
+  on('ui.render', { component: 'ToolResult' }, async ($, e, next) => {
+    if (e.surface !== 'terminal' || e.viewport?.isFullscreen === false) return next(e)
+    const open = (await read($, memberOf(OPEN, e))) !== OPEN_BY_DEFAULT.has(e.props.tool)
+    if (open) return next(e)
+    const { Box } = $.ui.resolve(e)
+    return <Box />
+  })
+
+  // A folded run of reads and searches: one dim count line; a press unfolds it
+  // into a line per call, each of which opens on its own. A run of one call
+  // unfolds into that call's row, opened, so its line is not drawn twice.
+  on('ui.render', { component: 'ToolGroup' }, async ($, e, next) => {
+    if (e.surface !== 'terminal' || e.viewport?.isFullscreen === false) return next(e)
+    const { Box, Text, Button } = $.ui.resolve(e)
+    const { calls } = e.props
+    const member = memberOf(OPEN, e)
+    const open = e.props.isExpanded || (await read($, member))
+    const only = calls.length === 1 ? calls[0]!.tool_use_id : undefined
+    if (open && only !== undefined) return next({ ...e, props: { ...e.props, isExpanded: true } })
+    const toggle = async () => {
+      const now = await update($, member, v => !v)
+      if (only !== undefined) await update($, memberOf(OPEN, { requestId: only }), () => now)
+    }
+    const running = calls.some(c => c.isRunning)
+    const failed = calls.some(c => c.isErrored || c.isInterrupted)
+    const tone: Tone = failed ? 'failed' : running ? 'running' : 'done'
+    const room = Math.max(10, (e.viewport?.columns ?? 80) - 10)
+    const [label, command] = fitLine(groupLabel(calls), commandsShown(calls), room)
+    return (
+      <Box flexDirection="column" marginTop={1}>
+        <Box flexDirection="row">
+          <Text {...TONES[tone]}>{STATE_MARK}</Text>
+          {failed ? <Text color="red">✗ </Text> : null}
+          {running ? (
+            <Text color="blue">{label}…</Text>
+          ) : (
+            <Button plain dimColor key="line" label={label} onPress={() => void toggle()} />
+          )}
+          {command ? (
+            <Text>
+              <Text dimColor> $ </Text>
+              {command}
+            </Text>
+          ) : null}
+          <Text> </Text>
+          <Button plain dimColor key="mark" label={open ? '⌄' : '›'} onPress={() => void toggle()} />
+        </Box>
+        {open ? await next({ ...e, props: { ...e.props, isExpanded: true } }) : null}
       </Box>
     )
   })

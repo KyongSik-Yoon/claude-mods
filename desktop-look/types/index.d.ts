@@ -15,6 +15,11 @@ declare module 'claude-code' {
       tools: string[]
       edits: Edits | null
       cost: number | null
+      // The text the model wrote between two tool calls, which the transcript
+      // sets apart as the mobile app does.
+      narration: string[]
+      // Whether a tool row shows what the engine draws under its one line.
+      open: StateFamily<boolean>
     }
   }
 }

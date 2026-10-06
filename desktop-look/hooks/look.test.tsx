@@ -2,7 +2,22 @@ import type { On, RenderElement, RenderNode } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 
-import { diffStat, dollars, fill, modelLabel, pressure, runningLabel, toolLabel } from './register'
+import {
+  between,
+  callLabel,
+  clip,
+  commandsShown,
+  diffStat,
+  fitLine,
+  dollars,
+  fill,
+  groupLabel,
+  modelLabel,
+  narrations,
+  pressure,
+  runningLabel,
+  toolLabel,
+} from './register'
 
 // Every element of a drawn tree, outermost first.
 const walk = (node: RenderNode): RenderElement[] =>
@@ -13,34 +28,46 @@ const boxes = (tree: RenderElement) => walk(tree).filter((n): n is BoxElement =>
 // One string per Text element, its pieces joined as drawn.
 const texts = (tree: RenderElement) =>
   walk(tree).flatMap(n => (n.type === 'Text' ? [(n.children ?? []).filter(c => typeof c === 'string').join('')] : []))
+// The labels of the Buttons drawn.
+const labels = (tree: RenderElement) => walk(tree).flatMap(n => (n.type === 'Button' ? [n.props.label] : []))
+// The filled cells standing for a bar: a Box with a background and no children.
+const bars = (tree: RenderElement) => boxes(tree).filter(b => b.props?.backgroundColor !== undefined && !b.children?.length)
 
 const PROMPT = { text: '안녕, 이 파일 좀 봐줘', origin: { kind: 'composer' }, isExpanded: true } as const
 
+const BASH = { tool: 'Bash', input: { command: 'ls -la', description: 'List files' }, isErrored: false, isInterrupted: false } as const
+
 const TOOL = {
-  ToolUse: { tool_use_id: 't1', tool: 'Edit', input: {}, isRunning: false, isErrored: false, isInterrupted: false },
-  ToolGroup: { calls: [], isActive: false, isExpanded: false },
-  ToolResult: { tool_use_id: 't1', tool: 'Edit', output: {}, isErrored: false },
+  ToolUse: { tool_use_id: 't1', ...BASH, isRunning: false, output: { stdout: '', stderr: '' } },
+  ToolGroup: { calls: [{ ...BASH, isRunning: false }], isActive: false, isExpanded: false },
+  ToolResult: { tool_use_id: 't1', tool: 'Bash', output: { stdout: '', stderr: '' }, isErrored: false },
 } as const
 
-for (const surface of ['terminal', 'desktop'] as const) {
-  // The test's hook stands for the engine: it draws its own row as ENGINE.
-  const engine = (on: On) =>
-    on('ui.render', ($, e) => {
-      const { Text } = $.ui.resolve(e)
-      return <Text>ENGINE</Text>
-    })
+// The test's hook stands for the engine: it draws its own row as ENGINE, and
+// keeps the props it was asked to draw.
+const engine = (on: On) => {
+  const seen: Record<string, unknown>[] = []
+  on('ui.render', ($, e) => {
+    seen.push(e.props as Record<string, unknown>)
+    const { Text } = $.ui.resolve(e)
+    return <Text>ENGINE</Text>
+  })
+  return seen
+}
 
+for (const surface of ['terminal', 'desktop'] as const) {
   test(`${surface}: the person's prompt`, async ($, on) => {
     engine(on)
     const ui = await $.ui.mount({ plugin: 'desktop-look', surface, component: 'UserMessage', props: PROMPT })
     const tree = await ui.drawn()
     if (surface === 'terminal') {
       expect(boxes(tree).some(b => b.props?.borderStyle !== undefined)).toBe(false)
-      expect(texts(tree)).toContain(PROMPT.text)
-      const rail = boxes(tree).find(b => b.props?.position === 'absolute')
-      expect(rail?.props).toMatchObject({ left: 0, top: 0, bottom: 0, width: 1 })
-      const colours = walk(tree).flatMap(n => (n.type === 'Text' ? [n.props?.color] : []))
-      expect(colours).toEqual(['suggestion', 'suggestion'])
+      const bubble = boxes(tree).find(b => b.props?.backgroundColor !== undefined)
+      expect(bubble?.props).toMatchObject({ backgroundColor: 'userMessageBackground', paddingX: 1 })
+      expect(texts(tree)).toEqual([PROMPT.text])
+      expect(bars(tree)).toEqual([])
+      // The text in the terminal's own colour: the bubble's fill sets it apart.
+      expect(walk(tree).find(n => n.type === 'Text')?.props?.color).toBeUndefined()
     } else {
       expect(texts(tree)).toEqual(['ENGINE'])
     }
@@ -53,60 +80,285 @@ for (const surface of ['terminal', 'desktop'] as const) {
     expect(texts(await ui.drawn())).toEqual(['ENGINE'])
   })
 
-  for (const [component, skip] of [['ToolUse', 1], ['ToolGroup', 1], ['ToolResult', 0]] as const) {
-    test(`${surface}: ${component} ${surface === 'terminal' ? 'gets a rail' : 'is left alone'}`, async ($, on) => {
+  test(`${surface}: the reply's text ${surface === 'terminal' ? 'drops its bullet' : 'is left alone'}`, async ($, on) => {
+    const seen = engine(on)
+    const props = { text: '답이에요', isFirstOfReply: true }
+    const ui = await $.ui.mount({ plugin: 'desktop-look', surface, component: 'AssistantMessage', props })
+    const tree = await ui.drawn()
+    expect(texts(tree)).toEqual(['ENGINE'])
+    expect(bars(tree)).toEqual([])
+    expect(seen.at(-1)).toMatchObject({ text: '답이에요', isFirstOfReply: surface !== 'terminal' })
+  })
+
+  for (const component of ['ToolUse', 'ToolGroup', 'ToolResult'] as const) {
+    test(`${surface}: ${component} ${surface === 'terminal' ? 'folds to one line' : 'is left alone'}`, async ($, on) => {
       engine(on)
       const ui = await $.ui.mount({ plugin: 'desktop-look', surface, component, props: TOOL[component] } as never)
       const tree = await ui.drawn()
-      expect(texts(tree)).toContain('ENGINE')
-      const rail = boxes(tree).find(b => b.props?.position === 'absolute')
       if (surface === 'terminal') {
-        expect(rail?.props).toMatchObject({ top: skip, bottom: 0, width: 1, overflow: 'hidden' })
+        expect(texts(tree)).not.toContain('ENGINE')
+        if (component !== 'ToolResult') expect(labels(tree)).toEqual(['Ran List files', '›'])
       } else {
-        expect(rail).toBeUndefined()
+        expect(texts(tree)).toEqual(['ENGINE'])
       }
     })
   }
 }
 
-// The rail's Text: the one under the absolutely placed Box.
-const railText = (tree: RenderElement) => {
-  const rail = boxes(tree).find(b => b.props?.position === 'absolute')
-  return rail?.children?.find((c): c is Extract<RenderElement, { type: 'Text' }> => typeof c !== 'string' && c.type === 'Text')
-}
-
-const CALL = { tool: 'Bash', input: {}, isRunning: false, isErrored: false, isInterrupted: false } as const
-
-const STATES = [
-  ['a running call', 'ToolUse', { ...TOOL.ToolUse, isRunning: true }, { color: 'blue' }],
-  ['an errored call', 'ToolUse', { ...TOOL.ToolUse, isErrored: true }, { color: 'red' }],
-  ['an interrupted call', 'ToolUse', { ...TOOL.ToolUse, isInterrupted: true }, { color: 'red' }],
-  ['a finished call', 'ToolUse', TOOL.ToolUse, { dimColor: true }],
-  ['an errored result', 'ToolResult', { ...TOOL.ToolResult, isErrored: true }, { color: 'red' }],
-  ['a group with a running call', 'ToolGroup', { ...TOOL.ToolGroup, isActive: true, calls: [CALL, { ...CALL, isRunning: true }] }, { color: 'blue' }],
-  ['the background hint under a running call', 'ToolProgress', { tool_use_id: 't1', kind: 'background_hint', hint: '(ctrl+b to run in background)' }, { color: 'blue' }],
-  ['a group with a failed call', 'ToolGroup', { ...TOOL.ToolGroup, calls: [CALL, { ...CALL, isErrored: true }] }, { color: 'red' }],
-] as const
-
-for (const [name, component, props, style] of STATES) {
-  test(`terminal: the rail of ${name}`, async ($, on) => {
-    on('ui.render', ($, e) => {
-      const { Text } = $.ui.resolve(e)
-      return <Text>ENGINE</Text>
-    })
-    const ui = await $.ui.mount({ plugin: 'desktop-look', surface: 'terminal', component, props } as never)
-    expect(railText(await ui.drawn())?.props).toMatchObject(style)
+// The main screen takes no clicks, so a folded line could never open there.
+for (const component of ['ToolUse', 'ToolGroup', 'ToolResult'] as const) {
+  test(`terminal main screen: ${component} keeps the engine's row`, async ($, on) => {
+    engine(on)
+    const viewport = { columns: 100, rows: 40, isFullscreen: false }
+    const ui = await $.ui.mount({ plugin: 'desktop-look', surface: 'terminal', component, props: TOOL[component], viewport } as never)
+    expect(texts(await ui.drawn())).toEqual(['ENGINE'])
   })
 }
 
+const mountTool = ($: Engine, component: 'ToolUse' | 'ToolResult' | 'ToolGroup', props: object) =>
+  $.ui.mount({ plugin: 'desktop-look', surface: 'terminal', component, requestId: 't1', props } as never)
+
+test('terminal: a press opens the engine\'s row and its result, and a second folds them', async ($, on) => {
+  engine(on)
+  const row = await mountTool($, 'ToolUse', TOOL.ToolUse)
+  const result = await mountTool($, 'ToolResult', TOOL.ToolResult)
+  await row.press({ key: 'line' })
+  expect(texts(await row.drawn())).toContain('ENGINE')
+  expect(labels(await row.drawn())).toEqual(['Ran List files', '⌄'])
+  expect(texts(await result.drawn())).toEqual(['ENGINE'])
+  await row.press({ key: 'mark' })
+  expect(texts(await row.drawn())).not.toContain('ENGINE')
+  expect(texts(await result.drawn())).not.toContain('ENGINE')
+})
+
+const ROWS = [
+  ['a running call', { ...TOOL.ToolUse, isRunning: true, output: undefined }, 'Running List files…', 'blue'],
+  ['a call waiting at the dialog', { ...TOOL.ToolUse, output: undefined }, 'Running List files…', 'blue'],
+  ['a failed call', { ...TOOL.ToolUse, isErrored: true, output: 'boom' }, '✗ ', 'red'],
+] as const
+
+for (const [name, props, shown, color] of ROWS) {
+  test(`terminal: ${name} reads in ${color}`, async ($, on) => {
+    engine(on)
+    const tree = await (await mountTool($, 'ToolUse', props)).drawn()
+    const text = walk(tree).find((n): n is Extract<RenderElement, { type: 'Text' }> => n.type === 'Text' && texts(n)[0] === shown)
+    expect(text?.props).toMatchObject({ color })
+  })
+}
+
+// The thin mark that opens a tool line, coloured by the call's state.
+const MARKS = [
+  ['a finished call', 'ToolUse', TOOL.ToolUse, { color: 'green' }],
+  ['a running call', 'ToolUse', { ...TOOL.ToolUse, isRunning: true, output: undefined }, { color: 'blue' }],
+  ['a failed call', 'ToolUse', { ...TOOL.ToolUse, isErrored: true, output: 'boom' }, { color: 'red' }],
+  ['an interrupted call', 'ToolUse', { ...TOOL.ToolUse, isInterrupted: true, output: 'cut' }, { color: 'red' }],
+  ['a finished group', 'ToolGroup', TOOL.ToolGroup, { color: 'green' }],
+  ['a group with a running call', 'ToolGroup', { ...TOOL.ToolGroup, isActive: true, calls: [{ ...BASH, isRunning: false }, { ...BASH, isRunning: true }] }, { color: 'blue' }],
+  ['a group with a failed call', 'ToolGroup', { ...TOOL.ToolGroup, calls: [{ ...BASH, isRunning: false }, { ...BASH, isErrored: true, isRunning: false }] }, { color: 'red' }],
+] as const
+
+for (const [name, component, props, style] of MARKS) {
+  test(`terminal: the mark of ${name}`, async ($, on) => {
+    engine(on)
+    const tree = await (await mountTool($, component, props)).drawn()
+    const first = walk(tree).find((n): n is Extract<RenderElement, { type: 'Text' }> => n.type === 'Text')
+    expect(texts(first!)).toEqual(['▎ '])
+    expect(first?.props).toMatchObject(style)
+  })
+}
+
+test('terminal: a described command shows the command it ran beside the description', async ($, on) => {
+  engine(on)
+  const tree = await (await mountTool($, 'ToolUse', TOOL.ToolUse)).drawn()
+  expect(labels(tree)[0]).toBe('Ran List files')
+  expect(texts(tree)).toEqual(expect.arrayContaining([' $ ', 'ls -la']))
+})
+
+test('terminal: a group shows each command it ran', async ($, on) => {
+  engine(on)
+  const calls = [
+    { ...BASH, tool: 'Read', input: { file_path: '/a.ts' }, isRunning: false },
+    { ...BASH, input: { command: 'wc -l a.ts' }, isRunning: false },
+    { ...BASH, input: { command: 'git status\ngit diff', description: 'Look at the tree' }, isRunning: false },
+  ]
+  const tree = await (await mountTool($, 'ToolGroup', { ...TOOL.ToolGroup, calls })).drawn()
+  expect(texts(tree)).toContain('wc -l a.ts; git status …')
+})
+
+test('the commands beside a line, and how a row shares its room', () => {
+  const bash = (input: object) => ({ tool: 'Bash', input })
+  expect(commandsShown([bash({ command: 'ls', description: 'List' })])).toBe('ls')
+  // Without a description the label is the command already.
+  expect(commandsShown([bash({ command: 'ls' })])).toBe('')
+  expect(commandsShown([{ tool: 'Read', input: { file_path: '/a' } }])).toBe('')
+  expect(commandsShown([bash({ command: 'ls' }), { tool: 'Read', input: {} }, bash({ command: 'a\nb' })])).toBe('ls; a …')
+  expect(fitLine('Ran List files', '', 40)).toEqual(['Ran List files', ''])
+  expect(fitLine('Ran List files', 'ls -la', 40)).toEqual(['Ran List files', 'ls -la'])
+  // A long description gives way so the command keeps its share.
+  const [label, command] = fitLine('Ran ' + 'x'.repeat(60), 'y'.repeat(60), 40)
+  expect(command.length).toBeGreaterThanOrEqual(17)
+  expect(label.length + 3 + command.length).toBeLessThanOrEqual(40)
+})
+
+test('terminal: an interrupted call says so', async ($, on) => {
+  engine(on)
+  const tree = await (await mountTool($, 'ToolUse', { ...TOOL.ToolUse, isInterrupted: true, output: 'cut' })).drawn()
+  expect(texts(tree)).toContain('Interrupted · ')
+})
+
+test('terminal: an edit shows its diff stat on the line', async ($, on) => {
+  engine(on)
+  const output = { filePath: '/src/a.ts', structuredPatch: [{ lines: ['+x', '+y', '-z'] }] }
+  const props = { tool_use_id: 't1', tool: 'Edit', input: { file_path: '/src/a.ts' }, isRunning: false, isErrored: false, isInterrupted: false, output }
+  const tree = await (await mountTool($, 'ToolUse', props)).drawn()
+  expect(labels(tree)[0]).toBe('Edited a.ts')
+  expect(texts(tree)).toEqual(expect.arrayContaining(['+2', '-1']))
+})
+
+test('terminal: the todo list starts open', async ($, on) => {
+  engine(on)
+  const props = { tool_use_id: 't1', tool: 'TodoWrite', input: { todos: [] }, isRunning: false, isErrored: false, isInterrupted: false, output: {} }
+  const row = await mountTool($, 'ToolUse', props)
+  expect(texts(await row.drawn())).toContain('ENGINE')
+  await row.press({ key: 'line' })
+  expect(texts(await row.drawn())).not.toContain('ENGINE')
+})
+
+test('terminal: a press unfolds a group for the engine', async ($, on) => {
+  const seen = engine(on)
+  const calls = [
+    { ...BASH, tool: 'Read', input: { file_path: '/a.ts' }, isRunning: false },
+    { ...BASH, isRunning: false },
+    { ...BASH, tool: 'Read', input: { file_path: '/b.ts' }, isRunning: false },
+  ]
+  const group = await mountTool($, 'ToolGroup', { ...TOOL.ToolGroup, calls })
+  expect(labels(await group.drawn())).toEqual(['Read 2 files, ran 1 command', '›'])
+  await group.press({ key: 'line' })
+  expect(texts(await group.drawn())).toContain('ENGINE')
+  expect(seen.at(-1)).toMatchObject({ isExpanded: true })
+})
+
+test('terminal: a run of one call unfolds into that call\'s row, opened', async ($, on) => {
+  const seen = engine(on)
+  const call = { ...BASH, tool_use_id: 'c1', isRunning: false, output: { stdout: '', stderr: '' } }
+  const group = await mountTool($, 'ToolGroup', { ...TOOL.ToolGroup, calls: [call] })
+  const row = await $.ui.mount({ plugin: 'desktop-look', surface: 'terminal', component: 'ToolUse', requestId: 'c1', props: { ...call } })
+  expect(texts(await row.drawn())).not.toContain('ENGINE')
+  await group.press({ key: 'line' })
+  expect(labels(await group.drawn())).toEqual([])
+  expect(seen.some(p => p.isExpanded === true)).toBe(true)
+  expect(texts(await row.drawn())).toContain('ENGINE')
+})
+
+// A transcript in Messages API form: a prompt, a reply's blocks, tool results.
+type Api = { role: 'user' | 'assistant'; content: { type: string; [field: string]: unknown }[] }
+const prompt = (text: string): Api => ({ role: 'user', content: [{ type: 'text', text }] })
+const results: Api = { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'u', content: '' }] }
+// A reply's blocks: a string is a text block, null a tool call.
+const said = (...blocks: (string | null)[]): Api => ({
+  role: 'assistant',
+  content: blocks.map(b => (b === null ? { type: 'tool_use', id: 'u', name: 'Bash', input: {} } : { type: 'text', text: b })),
+})
+
+// The test's hooks stand for the engine; all of them go in before the first $ call.
+const engineFor = (on: On, extra?: (on: On) => void, messages: Api[] = []) => {
+  const seen = engine(on)
+  on('session.start', () => ({ cwd: '/tmp' }))
+  on('session.model', () => ({ value: 'claude-haiku-4-5-20251001' }))
+  on('session.usage', () => ({ value: { startedAt: 0, context: { window: 200_000 }, rateLimits: [], cost: { usd: 0 } } }))
+  on('session.measure', (_$, e) => ({ changed: e.changed }))
+  on('session.id', () => ({ value: 's1' }))
+  on('session.messages', () => ({ value: messages }))
+  extra?.(on)
+  return seen
+}
+
+const start = ($: Engine) =>
+  $.session.start({ source: 'startup', cwd: '/tmp', surface: 'terminal', isInteractive: true } as never)
+
+const reply = async ($: Engine, text: string) => {
+  const ui = await $.ui.mount({ plugin: 'desktop-look', surface: 'terminal', component: 'AssistantMessage', props: { text, isFirstOfReply: true } })
+  return ui.drawn()
+}
+
+const step = (index: number, answer: string, tools: number) =>
+  ({ turnId: 't1', index, answer, toolUses: Array.from({ length: tools }, (_, i) => ({ id: `u${i}`, name: 'Bash', input: {} })), stop: { reason: tools ? 'tool_use' : 'end_turn' } }) as never
+
+test('terminal: text between two tool calls gets the grey bar; the opening line and the answer do not', async ($, on) => {
+  const answers = [step(0, '먼저 볼게요', 1), step(1, '이제 고칠게요', 1), step(2, '끝났어요', 0)]
+  engineFor(on, on => on('turn.step', async function* () { return answers.shift()! }))
+  await start($)
+  for (const index of [0, 1, 2]) {
+    for await (const _ of $.turn.step({ turnId: 't1', index, model: 'm', messageCount: 1 } as never)) void _
+  }
+  expect(bars(await reply($, '이제 고칠게요\n'))).toEqual([expect.objectContaining({ props: expect.objectContaining({ backgroundColor: 'subtle' }) })])
+  expect(bars(await reply($, '먼저 볼게요'))).toEqual([])
+  expect(bars(await reply($, '끝났어요'))).toEqual([])
+})
+
+test('terminal: a text after a tool call in the same response gets the bar', async ($, on) => {
+  const chunks = [
+    { kind: 'text', index: 0, text: '먼저 ' },
+    { kind: 'text', index: 0, text: '볼게요' },
+    { kind: 'tool', index: 1, id: 'u1', name: 'Read' },
+    { kind: 'text', index: 2, text: '이어서 이것도' },
+    { kind: 'tool', index: 3, id: 'u2', name: 'Grep' },
+  ]
+  engineFor(on, on =>
+    on('turn.step', async function* () {
+      for (const c of chunks) yield c as never
+      return step(0, '먼저 볼게요이어서 이것도', 2)
+    }),
+  )
+  await start($)
+  for await (const _ of $.turn.step({ turnId: 't1', index: 0, model: 'm', messageCount: 1 } as never)) void _
+  expect(bars(await reply($, '이어서 이것도'))).toHaveLength(1)
+  expect(bars(await reply($, '먼저 볼게요'))).toEqual([])
+})
+
+test('terminal: a resumed transcript\'s narration is read off its messages', async ($, on) => {
+  engineFor(on, undefined, [prompt('go'), said('먼저', null), results, said('그다음', null), results, said('끝')])
+  await start($)
+  expect(bars(await reply($, '그다음'))).toHaveLength(1)
+  expect(bars(await reply($, '먼저'))).toEqual([])
+})
+
+test('narration: the text between a turn\'s first and last tool calls', () => {
+  expect(between(['a', null, 'b', null, 'c'])).toEqual(['b'])
+  expect(between(['a', null, 'b'], true)).toEqual(['a'])
+  expect(between(['a', 'b'], true)).toEqual([])
+  expect(narrations([prompt('go'), said('a', null), results, said('b', null), results, said('c')])).toEqual(['b'])
+  // Blocks split across messages read the same.
+  expect(narrations([prompt('go'), said('a'), said(null), results, said('b'), said(null), results, said('c')])).toEqual(['b'])
+  // Two texts in one response, each between calls.
+  expect(narrations([prompt('go'), said('a', null, 'b', null), results, said('c')])).toEqual(['b'])
+  // A new prompt starts a new turn: its first line is an opening again.
+  expect(narrations([prompt('go'), said('a', null), results, said('b'), prompt('again'), said('c', null)])).toEqual([])
+})
+
+test('a call reads as the mobile app lists it', () => {
+  expect(callLabel('Bash', { command: 'wc -l a.ts\nmore', description: 'Count lines' }, false)).toBe('Ran Count lines')
+  expect(callLabel('Bash', { command: 'wc -l a.ts\nmore' }, true)).toBe('Running wc -l a.ts')
+  expect(callLabel('Read', { file_path: '/x/y/register.tsx' }, false)).toBe('Read register.tsx')
+  expect(callLabel('WebFetch', { url: 'https://news.hada.io/topic?id=1' }, false)).toBe('Fetched news.hada.io')
+  expect(callLabel('TodoWrite', { todos: [] }, false)).toBe('Updated todos')
+  expect(callLabel('mcp__claude_ai_Slack__slack_send_message', {}, false)).toBe('slack_send_message')
+  expect(groupLabel([{ tool: 'Grep', input: {}, isRunning: false }, { tool: 'Glob', input: {}, isRunning: true }])).toBe('Searching 2 patterns')
+  expect(groupLabel([{ tool: 'Read', input: { file_path: '/a.ts' }, isRunning: false }])).toBe('Read a.ts')
+})
+
+test('a line is cut to its room, counting Hangul as two cells', () => {
+  expect(clip('abcdef', 6)).toBe('abcdef')
+  expect(clip('abcdef', 4)).toBe('abc…')
+  expect(clip('가나다라', 5)).toBe('가나…')
+})
+
 for (const [bubbleWidth, spacer] of [['60%', '40%'], ['90%', '10%'], [undefined, '25%']] as const) {
   test(`terminal: bubble width ${bubbleWidth ?? 'default'}`, { options: bubbleWidth ? { bubbleWidth } : {} }, async ($, on) => {
-    on('ui.render', ($, e) => {
-      const { Text } = $.ui.resolve(e)
-      return <Text>ENGINE</Text>
-    })
+    engine(on)
     const ui = await $.ui.mount({ plugin: 'desktop-look', surface: 'terminal', component: 'UserMessage', props: PROMPT })
-    expect(boxes(await ui.drawn()).at(-1)?.props?.width).toBe(spacer)
+    // The room left of the bubble: what pushes it to the right, at least this.
+    expect(boxes(await ui.drawn()).find(b => b.props?.flexGrow === 1)?.props?.minWidth).toBe(spacer)
   })
 }
 
@@ -132,23 +384,6 @@ const BAND = {
   scroll: { offset: 0, bodyRows: 9 },
   view: {},
 } as const
-
-// The test's hooks stand for the engine; all of them go in before the first $ call.
-const engineFor = (on: On, extra?: (on: On) => void) => {
-  on('ui.render', ($, e) => {
-    const { Text } = $.ui.resolve(e)
-    return <Text>ENGINE</Text>
-  })
-  on('session.start', () => ({ cwd: '/tmp' }))
-  on('session.model', () => ({ value: 'claude-haiku-4-5-20251001' }))
-  on('session.usage', () => ({ value: { startedAt: 0, context: { window: 200_000 }, rateLimits: [], cost: { usd: 0 } } }))
-  on('session.measure', (_$, e) => ({ changed: e.changed }))
-  on('session.id', () => ({ value: 's1' }))
-  extra?.(on)
-}
-
-const start = ($: Engine) =>
-  $.session.start({ source: 'startup', cwd: '/tmp', surface: 'terminal', isInteractive: true } as never)
 
 const bandText = async ($: Engine, surface: 'terminal' | 'desktop' = 'terminal', props: object = BAND) => {
   const ui = await $.ui.mount({ plugin: 'desktop-look', surface, component: 'AbovePrompt', props } as never)
@@ -177,6 +412,16 @@ test('terminal: the band follows the main loop\'s model and the measured context
   expect(shown).toContain('◆ Opus 5.5 · 1M · xhigh')
   expect(shown).toMatch(/━━ +──────── +23% · 230k\/1M/)
   expect(shown).toContain('230k/1M')
+})
+
+test('terminal: a filling context reads in the theme\'s warning colour, not a named yellow', { options: { bandContext: true } }, async ($, on) => {
+  engineFor(on)
+  await start($)
+  await $.session.measure({ context: { tokens: 328_000, window: 1_000_000, percent: 33 }, rateLimits: [], changed: ['context'] })
+  const ui = await $.ui.mount({ plugin: 'desktop-look', surface: 'terminal', component: 'AbovePrompt', props: BAND } as never)
+  // The Text whose own strings hold the figure, not the one wrapping it.
+  const shade = walk(await ui.drawn()).find(n => n.type === 'Text' && texts(n)[0]!.includes('33%'))
+  expect(shade?.type === 'Text' && shade.props).toMatchObject({ color: 'warning' })
 })
 
 test('terminal: the band counts tool calls while they run', async ($, on) => {
@@ -276,7 +521,6 @@ test('running tools read by name, and fall back to a count when there is no room
   expect(runningLabel(['Read', 'Grep', 'Read', 'Read'], 40)).toBe('Read ×3, Grep')
   expect(runningLabel(['Read', 'Grep', 'Read', 'Read'], 8)).toBe('4 running')
 })
-
 
 test('context pressure follows the tokens held, or the window share, whichever bites first', () => {
   expect(pressure({ tokens: 230_000, window: 1_000_000, percent: 23 })).toBe('calm')
