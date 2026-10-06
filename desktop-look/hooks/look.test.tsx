@@ -442,8 +442,11 @@ for (const [bubbleWidth, spacer] of [['60%', '40%'], ['90%', '10%'], [undefined,
   test(`terminal: bubble width ${bubbleWidth ?? 'default'}`, { options: bubbleWidth ? { bubbleWidth } : {} }, async ($, on) => {
     engine(on)
     const ui = await $.ui.mount({ plugin: 'desktop-look', surface: 'terminal', component: 'UserMessage', props: PROMPT })
-    // The room left of the bubble: what pushes it to the right, at least this.
-    expect(boxes(await ui.drawn()).find(b => b.props?.flexGrow === 1)?.props?.minWidth).toBe(spacer)
+    // The room right of the bubble, at least this: the bubble keeps to the left edge.
+    const row = boxes(await ui.drawn())[0]!
+    const [bubble, room] = (row.children ?? []).filter((n): n is BoxElement => typeof n !== 'string' && n.type === 'Box')
+    expect(bubble?.props?.backgroundColor).toBe('userMessageBackground')
+    expect(room?.props).toMatchObject({ flexGrow: 1, minWidth: spacer })
   })
 }
 

@@ -614,19 +614,20 @@ export const register: Register = (on, options) => {
     )
   })
 
-  // The person's prompt as a filled bubble on the right, as the
-  // desktop and mobile apps set it; at most `width` of the terminal wide.
+  // The person's prompt as a filled bubble at the left edge, where the
+  // engine's row for a pasted image (`⎿ [Image #1]`), which no hook reaches,
+  // sits under it; at most `width` of the terminal wide.
   on('ui.render', { component: 'UserMessage' }, ($, e, next) => {
     if (e.surface !== 'terminal' || !OWN.has(e.props.origin.kind) || e.props.from || e.props.task) return next(e)
     const { Box, Text } = $.ui.resolve(e)
     return (
       <Box flexDirection="row" marginTop={1}>
-        <Box flexGrow={1} minWidth={spacer} />
         <Box flexShrink={1} backgroundColor={BUBBLE_FILL} paddingX={1}>
           <Text wrap="wrap">
             {e.props.text}
           </Text>
         </Box>
+        <Box flexGrow={1} minWidth={spacer} />
       </Box>
     )
   })
