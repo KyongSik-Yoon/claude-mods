@@ -7,11 +7,15 @@ import {
   callLabel,
   clip,
   commandsShown,
+  cut,
   diffStat,
   fitLine,
   dollars,
   fill,
   groupLabel,
+  listed,
+  marks,
+  mended,
   modelLabel,
   narrations,
   pressure,
@@ -30,6 +34,8 @@ const texts = (tree: RenderElement) =>
   walk(tree).flatMap(n => (n.type === 'Text' ? [(n.children ?? []).filter(c => typeof c === 'string').join('')] : []))
 // The labels of the Buttons drawn.
 const labels = (tree: RenderElement) => walk(tree).flatMap(n => (n.type === 'Button' ? [n.props.label] : []))
+// The markdown each Markdown element was given, in drawing order.
+const markdown = (tree: RenderElement) => walk(tree).flatMap(n => (n.type === 'Markdown' ? [n.props.text] : []))
 // The filled cells standing for a bar: a Box with a background and no children.
 const bars = (tree: RenderElement) => boxes(tree).filter(b => b.props?.backgroundColor !== undefined && !b.children?.length)
 
@@ -316,6 +322,15 @@ test('terminal: a text after a tool call in the same response gets the bar', asy
   expect(bars(await reply($, '먼저 볼게요'))).toEqual([])
 })
 
+test('terminal: a list between two tool calls is drawn beside the bar', async ($, on) => {
+  engineFor(on, undefined, [prompt('go'), said('먼저', null), results, said('고칠 곳:\n- 하나\n- 둘', null), results, said('끝')])
+  await start($)
+  const tree = await reply($, '고칠 곳:\n- 하나\n- 둘')
+  expect(bars(tree)).toHaveLength(1)
+  expect(texts(tree)).toEqual(['• ', '• '])
+  expect(markdown(tree)).toEqual(['고칠 곳:', '하나', '둘'])
+})
+
 test('terminal: a resumed transcript\'s narration is read off its messages', async ($, on) => {
   engineFor(on, undefined, [prompt('go'), said('먼저', null), results, said('그다음', null), results, said('끝')])
   await start($)
@@ -334,6 +349,92 @@ test('narration: the text between a turn\'s first and last tool calls', () => {
   expect(narrations([prompt('go'), said('a', null, 'b', null), results, said('c')])).toEqual(['b'])
   // A new prompt starts a new turn: its first line is an opening again.
   expect(narrations([prompt('go'), said('a', null), results, said('b'), prompt('again'), said('c', null)])).toEqual([])
+})
+
+const text = (t: string, gap = false) => ({ kind: 'text', text: t, gap })
+const list = (marker: string, items: unknown[][], more: object = {}) => ({ kind: 'list', marker, start: 1, loose: false, items, gap: false, ...more })
+const lines = (s: string) => cut(s.split('\n'))
+
+test('lists: a reply is cut where its lists are', () => {
+  expect(lines('앞 문단\n- a\n- b\n\n뒤 문단')).toEqual([text('앞 문단'), list('-', [[text('a')], [text('b')]]), text('뒤 문단', true)])
+  // Nested items belong to theirs; numbered ones keep their delimiter.
+  expect(lines('- a\n  - b\n  - c\n- d')).toEqual([list('-', [[text('a'), list('-', [[text('b')], [text('c')]])], [text('d')]])])
+  expect(lines('3) x\n4) y')).toEqual([list(')', [[text('x')], [text('y')]], { start: 3 })])
+  // A wrapped line with no indent carries on its item's paragraph.
+  expect(lines('- a\nb')).toEqual([list('-', [[text('a\nb')]])])
+  // An item's second paragraph stays in it, for the engine to space.
+  expect(lines('1. a\n\n   more\n2. b')).toEqual([list('.', [[text('a\n\nmore')], [text('b')]])])
+  // Blank lines between items: a loose list.
+  expect(lines('- a\n\n- b')).toEqual([list('-', [[text('a')], [text('b')]], { loose: true })])
+  // Another bullet character starts another list.
+  expect(lines('- a\n* b')).toEqual([list('-', [[text('a')]]), list('*', [[text('b')]])])
+})
+
+test('lists: what is not a list stays the engine\'s', () => {
+  // Code, even with a list in it.
+  expect(lines('```js\n- 코드\n1. 번호\n```')).toEqual([text('```js\n- 코드\n1. 번호\n```')])
+  expect(lines('- a\n  ```\n  - x\n  ```')).toEqual([list('-', [[text('a\n```\n- x\n```')]])])
+  // Rules, and a bold run at the start of a line.
+  expect(lines('* * *\n- - -\n**굵게** 시작')).toEqual([text('* * *\n- - -\n**굵게** 시작')])
+  // Within a paragraph only a list with text, numbered from 1, starts.
+  expect(lines('문단\n2. 둘째')).toEqual([text('문단\n2. 둘째')])
+  expect(lines('문단\n-')).toEqual([text('문단\n-')])
+  expect(lines('문단\n1. 첫째')).toEqual([text('문단'), list('.', [[text('첫째')]])])
+  expect(listed('목록 없는 답')).toBeNull()
+  expect(listed('<context>x</context>\n- a')).toBeNull()
+})
+
+test('lists: numbers count from the start and line up; bullets follow the depth', () => {
+  expect(marks(list('.', [[], [], []]) as never, 0)).toEqual(['1. ', '2. ', '3. '])
+  expect(marks(list('.', [[], []], { start: 9 }) as never, 0)).toEqual([' 9. ', '10. '])
+  expect(marks(list('-', [[]]) as never, 0)).toEqual(['• '])
+  expect(marks(list('-', [[]]) as never, 1)).toEqual(['◦ '])
+  expect(marks(list('*', [[]]) as never, 5)).toEqual(['▪ '])
+})
+
+test('terminal: a reply with a list is drawn here, its prose by the Markdown element', async ($, on) => {
+  engine(on)
+  const ui = await $.ui.mount({
+    plugin: 'desktop-look',
+    surface: 'terminal',
+    component: 'AssistantMessage',
+    props: { text: '해결 방법\n1. **첫째:** 하나\n   - 곁들임\n1. 둘째\n\n끝.', isFirstOfReply: true },
+  })
+  const tree = await ui.drawn()
+  expect(texts(tree)).toEqual(['1. ', '◦ ', '2. '])
+  expect(markdown(tree)).toEqual(['해결 방법', '**첫째:** 하나', '곁들임', '둘째', '끝.'])
+  // Set in from the left edge, as the apps indent a list.
+  expect(boxes(tree).some(b => b.props?.paddingLeft === 2)).toBe(true)
+})
+
+const J = '\u200B'
+
+test('bold: a run CommonMark would leave as asterisks is mended beside its punctuation', () => {
+  expect(mended('**"인용"**을 꼽았습니다')).toBe(`**"인용"${J}**을 꼽았습니다`)
+  expect(mended('**foo()**를 호출합니다')).toBe(`**foo()${J}**를 호출합니다`)
+  expect(mended('**정말?**이라고 물었습니다')).toBe(`**정말?${J}**이라고 물었습니다`)
+  // The mirror: an opening run between a letter and a quote.
+  expect(mended('한 줄로**"흠"** 이라고')).toBe(`한 줄로**${J}"흠"** 이라고`)
+  // A code span closing the bold: the mark goes after the span, not in it.
+  expect(mended('**`register.tsx`**를 고쳤어요')).toBe(`**\`register.tsx\`${J}**를 고쳤어요`)
+})
+
+test('bold: what CommonMark already reads, and code, stay as written', () => {
+  for (const text of ['**설정 파일**을 읽습니다', '**"인용"** 을 꼽았습니다', '**"인용"**, 그리고', '목록 없는 답', '2**3은 8', '* * *\n***'])
+    expect(mended(text)).toBe(text)
+  expect(mended('`a**"b"**c`를')).toBe('`a**"b"**c`를')
+  expect(mended('```\n**"인용"**을\n```')).toBe('```\n**"인용"**을\n```')
+  expect(mended('\\**"인용"**을')).toBe(`\\**"인용"${J}**을`)
+  // Mending twice adds nothing.
+  const once = mended('**"인용"**을, **foo()**를')
+  expect(mended(once)).toBe(once)
+})
+
+test('terminal: the engine is handed the mended text', async ($, on) => {
+  const seen = engine(on)
+  const ui = await $.ui.mount({ plugin: 'desktop-look', surface: 'terminal', component: 'AssistantMessage', props: { text: '**"인용"**을', isFirstOfReply: true } })
+  await ui.drawn()
+  expect(seen.at(-1)).toMatchObject({ text: `**"인용"${J}**을`, isFirstOfReply: false })
 })
 
 test('a call reads as the mobile app lists it', () => {

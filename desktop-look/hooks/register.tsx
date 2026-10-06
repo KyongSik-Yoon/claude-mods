@@ -294,6 +294,194 @@ export const clip = (s: string, room: number): string => {
   return `${out}…`
 }
 
+// A reply cut where its lists are: the lists this mod draws, as the apps do
+// (a bullet, an indent, the wrapped lines hung under the text), and the rest
+// as the engine's markdown. `gap` when a blank line came before the piece.
+export type Piece =
+  | { kind: 'text'; text: string; gap: boolean }
+  | { kind: 'list'; marker: string; start: number; loose: boolean; items: Piece[][]; gap: boolean }
+
+type Item = { marker: string; start: number; col: number; empty: boolean }
+type Fence = { mark: string; length: number } | null
+
+const ITEM = /^( {0,3})([-+*]|\d{1,9}[.)])( +|$)(.*)$/
+const RULE = /^ {0,3}([-*_])(?: *\1){2,} *$/
+const HEADING = /^ {0,3}#{1,6}(?: |$)/
+const QUOTE = /^ {0,3}>/
+const FENCE = /^ {0,3}(`{3,}|~{3,})/
+
+// A list item's first line, as CommonMark reads it: its marker and the column
+// its text starts at (past one to four spaces; five or more begin indented code).
+const itemAt = (line: string): Item | null => {
+  const m = ITEM.exec(line)
+  if (!m || RULE.test(line)) return null
+  const [, indent = '', marker = '', spaces = '', rest = ''] = m
+  const pad = !rest || spaces.length > 4 ? 1 : spaces.length
+  const start = /\d/.test(marker) ? parseInt(marker, 10) : 1
+  return { marker: /\d/.test(marker) ? marker.slice(-1) : marker, start, col: indent.length + marker.length + pad, empty: !rest.trim() }
+}
+
+const indentOf = (line: string): number => line.length - line.trimStart().length
+
+// A numbered item's marker is its delimiter, `.` or `)`; a bullet's, its char.
+const numbered = (marker: string): boolean => marker === '.' || marker === ')'
+
+// The fence open after `line`: opened, closed by a run as long, or as it was.
+const fenceAfter = (fence: Fence, line: string): Fence => {
+  const run = FENCE.exec(line)?.[1] ?? ''
+  if (!fence) return run ? { mark: run.charAt(0), length: run.length } : null
+  return run.charAt(0) === fence.mark && run.length >= fence.length && !line.trim().slice(run.length).trim() ? null : fence
+}
+
+const isParagraph = (line: string): boolean => !!line.trim() && !HEADING.test(line) && !RULE.test(line)
+
+type List = Piece & { kind: 'list' }
+
+// One list from `at`, opened by `head`: its items while siblings follow, each
+// item's lines those indented to its text, plus lazy lines carrying on its
+// paragraph. Blank lines after the last item stay the caller's.
+const listAt = (lines: readonly string[], at: number, head: Item): [List, number] => {
+  const list: List = { kind: 'list', marker: head.marker, start: head.start, loose: false, items: [], gap: false }
+  let i = at
+  for (let item = head; ; ) {
+    let last = (lines[i] ?? '').slice(item.col)
+    const body = [last]
+    let fence = fenceAfter(null, last)
+    for (i++; i < lines.length; i++) {
+      const line = lines[i] ?? ''
+      if (!line.trim() || indentOf(line) >= item.col) last = line.slice(Math.min(item.col, indentOf(line)))
+      else if (!fence && isParagraph(last) && isParagraph(line) && !QUOTE.test(line) && !FENCE.test(line) && !itemAt(line))
+        last = line.trimStart()
+      else break
+      body.push(last)
+      fence = fenceAfter(fence, last)
+    }
+    let blank = 0
+    while (body.length - blank > 1 && !body[body.length - 1 - blank]?.trim()) blank++
+    list.items.push(cut(body.slice(0, body.length - blank)))
+    const next = i < lines.length ? itemAt(lines[i] ?? '') : null
+    if (!next || next.marker !== head.marker) return [list, i - blank]
+    list.loose ||= blank > 0
+    item = next
+  }
+}
+
+// Lines into pieces. A list may break into a paragraph only as CommonMark
+// lets it: with text in its first item and, numbered, starting at 1.
+export const cut = (lines: readonly string[]): Piece[] => {
+  const pieces: Piece[] = []
+  let text: string[] = []
+  let gap = false
+  const flush = () => {
+    const a = text.findIndex(line => line.trim())
+    if (a < 0) gap ||= text.length > 0
+    else {
+      let b = text.length
+      while (!text[b - 1]?.trim()) b--
+      pieces.push({ kind: 'text', text: text.slice(a, b).join('\n'), gap: gap || a > 0 })
+      gap = b < text.length
+    }
+    text = []
+  }
+  let fence: Fence = null
+  let paragraph = false
+  for (let i = 0; i < lines.length; ) {
+    const line = lines[i] ?? ''
+    const item = fence ? null : itemAt(line)
+    if (item && (!paragraph || (!item.empty && (!numbered(item.marker) || item.start === 1)))) {
+      flush()
+      const [list, next] = listAt(lines, i, item)
+      pieces.push({ ...list, gap })
+      gap = false
+      paragraph = false
+      i = next
+      continue
+    }
+    const was = fence
+    fence = fenceAfter(fence, line)
+    paragraph = !was && !fence && isParagraph(line)
+    text.push(line)
+    i++
+  }
+  flush()
+  return pieces
+}
+
+// The pieces of a reply worth drawing here: null when it has no list, or
+// holds what only the engine's own drawing hides or can take.
+export const listed = (text: string): Piece[] | null => {
+  if (text.length > 50_000 || text.includes('<context>')) return null
+  const pieces = cut(text.split('\n'))
+  return pieces.some(p => p.kind === 'list') ? pieces : null
+}
+
+const BULLETS = '•◦▪'
+
+// Each item's mark: its number, as the list counts from its start, or the
+// bullet for its depth; numbers right-aligned to the widest.
+export const marks = (list: List, depth: number): string[] => {
+  const said = list.items.map((_, i) =>
+    numbered(list.marker) ? `${list.start + i}${list.marker}` : BULLETS.charAt(Math.min(depth, BULLETS.length - 1)),
+  )
+  const wide = Math.max(...said.map(m => m.length))
+  return said.map(m => `${m.padStart(wide)} `)
+}
+
+// CommonMark leaves a `**` as written when it closes right after a quote, a
+// bracket or a `?` and runs into a letter, which Korean particles do all the
+// time (`**"인용"**을`), or opens in the mirror of that. A zero-width space
+// on that side lets the run open or close, and the screen drops it, so text
+// copied off it is as written; code is left as written.
+const JOINER = '\u200B'
+const PUNCTUATION = /[\p{P}\p{S}]/u
+const side = (ch: string | undefined): 'space' | 'mark' | 'letter' =>
+  ch === undefined || /\s/u.test(ch) ? 'space' : PUNCTUATION.test(ch) ? 'mark' : 'letter'
+
+const mendLine = (line: string): string => {
+  const chars = [...line]
+  let out = ''
+  for (let i = 0; i < chars.length; ) {
+    const ch = chars[i] ?? ''
+    let n = 0
+    while (chars[i + n] === ch) n++
+    if (ch === '\\') n = Math.min(2, chars.length - i)
+    else if (ch === '`') {
+      // A code span ends at the next run of as many backticks.
+      for (let j = i + n; j < chars.length; ) {
+        let m = 0
+        while (chars[j + m] === '`') m++
+        if (m === n) {
+          n = j + m - i
+          break
+        }
+        j += m || 1
+      }
+    } else if (ch === '*' && n >= 2) {
+      const [before, after] = [side(chars[i - 1]), side(chars[i + n])]
+      const run = '*'.repeat(n)
+      out += before === 'mark' && after === 'letter' ? JOINER + run : after === 'mark' && before === 'letter' ? run + JOINER : run
+      i += n
+      continue
+    }
+    out += chars.slice(i, i + n).join('')
+    i += n
+  }
+  return out
+}
+
+// The text as the engine should read it: bold that CommonMark would leave as
+// asterisks mended, fences left alone; the same string when nothing needs it.
+export const mended = (text: string): string => {
+  let fence: Fence = null
+  const lines = text.split('\n').map(line => {
+    const was = fence
+    fence = fenceAfter(fence, line)
+    return was || fence || !line.includes('**') ? line : mendLine(line)
+  })
+  const out = lines.join('\n')
+  return out === text ? text : out
+}
+
 export const register: Register = (on, options) => {
   const width = WIDTHS.find(w => w === options.bubbleWidth) ?? '75%'
   const spacer = `${100 - parseInt(width, 10)}%`
@@ -477,19 +665,56 @@ export const register: Register = (on, options) => {
   })
 
   // The reply's text without the bullet, flush left as the mobile app sets it;
-  // the text between two tool calls beside a grey bar. The engine still draws
-  // the markdown, so another mod that rewrites the text composes with this.
+  // the text between two tool calls beside a grey bar. A reply with a list is
+  // drawn here, its lists set in with bullets and its prose by the Markdown
+  // element; any other reply is the engine's, so a mod beneath that rewrites
+  // the text composes with this.
   on('ui.render', { component: 'AssistantMessage' }, async ($, e, next) => {
     if (e.surface !== 'terminal') return next(e)
-    const plain = { ...e, props: { ...e.props, isFirstOfReply: false } }
-    if (e.props.isSummary || !(await read($, NARRATION)).includes(e.props.text.trim())) return next(plain)
-    const { Box } = $.ui.resolve(e)
-    // The engine's drawing opens with a blank row, which the bar skips.
+    const plain = { ...e, props: { ...e.props, text: mended(e.props.text), isFirstOfReply: false } }
+    if (e.props.isSummary) return next(plain)
+    const { Box, Text, Markdown } = $.ui.resolve(e)
+    const draw = (pieces: readonly Piece[], depth: number): RenderNode[] =>
+      pieces.map((piece, at) => (
+        <Box flexDirection="column" marginTop={at > 0 && piece.gap ? 1 : 0}>
+          {piece.kind === 'text' ? <Markdown text={piece.text} /> : drawList(piece, depth)}
+        </Box>
+      ))
+    // Each item a row: its mark, then its text in a column, so wrapped lines
+    // hang under the text; a list at the left edge set in by two.
+    const drawList = (list: List, depth: number): RenderNode => {
+      const shown = marks(list, depth)
+      return (
+        <Box flexDirection="column" paddingLeft={depth === 0 ? 2 : 0}>
+          {list.items.map((item, i) => (
+            <Box flexDirection="row" marginTop={i > 0 && list.loose ? 1 : 0}>
+              <Box flexShrink={0}>
+                <Text>{shown[i]}</Text>
+              </Box>
+              <Box flexDirection="column" flexShrink={1} flexGrow={1}>
+                {draw(item, depth + 1)}
+              </Box>
+            </Box>
+          ))}
+        </Box>
+      )
+    }
+    // Opens with a blank row as the engine's drawing does.
+    const pieces = listed(plain.props.text)
+    const reply = pieces ? (
+      <Box flexDirection="column" marginTop={1}>
+        {draw(pieces, 0)}
+      </Box>
+    ) : (
+      await next(plain)
+    )
+    if (!(await read($, NARRATION)).includes(e.props.text.trim())) return reply
+    // The bar skips that blank row.
     return (
       <Box flexDirection="row">
         <Box width={1} flexShrink={0} marginTop={1} backgroundColor={NARRATION_COLOR} />
         <Box flexShrink={1} flexGrow={1} paddingLeft={1}>
-          {await next(plain)}
+          {reply}
         </Box>
       </Box>
     )
