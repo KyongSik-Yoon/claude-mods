@@ -731,6 +731,9 @@ export const register: Register = (on, options) => {
   const showBand = options.showBand !== false
   const bandModel = options.bandModel === true
   const bandContext = options.bandContext === true
+  const showPrompt = options.showPrompt !== false
+  const showReplies = options.showReplies !== false
+  const showTools = options.showTools !== false
 
   // The band's figures: seeded when the session starts, then pushed by the
   // engine (each main-loop step, each measurement, each tool call); the
@@ -912,7 +915,7 @@ export const register: Register = (on, options) => {
   // sits under it; at most `width` of the terminal wide. Pasted text reads as
   // the composer's placeholder, which a press opens.
   on('ui.render', { component: 'UserMessage' }, async ($, e, next) => {
-    if (e.surface !== 'terminal' || !OWN.has(e.props.origin.kind) || e.props.from || e.props.task) return next(e)
+    if (e.surface !== 'terminal' || !showPrompt || !OWN.has(e.props.origin.kind) || e.props.from || e.props.task) return next(e)
     const { Box, Text, Button } = $.ui.resolve(e)
     const pieces = said(e.props.text)
     // A pasted block is its placeholder, a press away from what was pasted:
@@ -957,7 +960,7 @@ export const register: Register = (on, options) => {
   // element; any other reply is the engine's, so a mod beneath that rewrites
   // the text composes with this.
   on('ui.render', { component: 'AssistantMessage' }, async ($, e, next) => {
-    if (e.surface !== 'terminal') return next(e)
+    if (e.surface !== 'terminal' || !showReplies) return next(e)
     const plain = { ...e, props: { ...e.props, text: mended(e.props.text), isFirstOfReply: false } }
     if (e.props.isSummary) return next(plain)
     const { Box } = $.ui.resolve(e)
@@ -987,7 +990,7 @@ export const register: Register = (on, options) => {
   // the engine's own row (the command, the diff, the output) beneath it. On
   // the main screen nothing takes a click, so the engine's rows stay.
   on('ui.render', { component: 'ToolUse' }, async ($, e, next) => {
-    if (e.surface !== 'terminal' || e.viewport?.isFullscreen === false) return next(e)
+    if (e.surface !== 'terminal' || !showTools || e.viewport?.isFullscreen === false) return next(e)
     const { Box, Text, Button } = $.ui.resolve(e)
     const { tool, input, isErrored, isInterrupted, output } = e.props
     // A call waiting at the permission dialog has no result yet either.
@@ -1032,7 +1035,7 @@ export const register: Register = (on, options) => {
 
   // The result under a standalone row: drawn while its row is open.
   on('ui.render', { component: 'ToolResult' }, async ($, e, next) => {
-    if (e.surface !== 'terminal' || e.viewport?.isFullscreen === false) return next(e)
+    if (e.surface !== 'terminal' || !showTools || e.viewport?.isFullscreen === false) return next(e)
     const open = (await read($, memberOf(OPEN, e))) !== OPEN_BY_DEFAULT.has(e.props.tool)
     const { Box } = $.ui.resolve(e)
     if (!open) return <Box />
@@ -1055,7 +1058,7 @@ export const register: Register = (on, options) => {
   // into a line per call, each of which opens on its own. A run of one call
   // unfolds into that call's row, opened, so its line is not drawn twice.
   on('ui.render', { component: 'ToolGroup' }, async ($, e, next) => {
-    if (e.surface !== 'terminal' || e.viewport?.isFullscreen === false) return next(e)
+    if (e.surface !== 'terminal' || !showTools || e.viewport?.isFullscreen === false) return next(e)
     const { Box, Text, Button } = $.ui.resolve(e)
     const { calls } = e.props
     const member = memberOf(OPEN, e)

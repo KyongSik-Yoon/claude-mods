@@ -1,6 +1,6 @@
 {
   "name": "desktop-look",
-  "version": "0.15.0",
+  "version": "0.16.0",
   "description": "Make the terminal transcript look like the Claude Code apps: your prompts beside an orange bar, tool calls as one line with a state mark, lists set in with bullets, the text between tool calls set apart, and an info band",
   "author": {
     "name": "KyongSik-Yoon"
@@ -16,6 +16,24 @@
         "90%"
       ],
       "default": "75%"
+    },
+    "showPrompt": {
+      "type": "boolean",
+      "title": "Your prompts",
+      "description": "Draw your own messages beside the orange bar (off leaves them to the engine or another mod)",
+      "default": true
+    },
+    "showReplies": {
+      "type": "boolean",
+      "title": "Replies",
+      "description": "Draw replies: lists with bullets, Korean bold, the narration bar, no reply bullet (off leaves them to the engine or another mod)",
+      "default": true
+    },
+    "showTools": {
+      "type": "boolean",
+      "title": "Tool lines",
+      "description": "Draw tool calls as one line that opens on a click (off leaves them to the engine or another mod)",
+      "default": true
     },
     "showBand": {
       "type": "boolean",

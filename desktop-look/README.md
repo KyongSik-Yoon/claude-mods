@@ -31,9 +31,14 @@ No setup needed. To change one, run `/plugin configure desktop-look@kyongsik-mod
 | Option | Default | |
 | --- | --- | --- |
 | Prompt width | `75%` | How wide your own messages may grow: `60%`, `75%` or `90%` of the terminal |
+| Your prompts | on | Your own messages beside the orange bar |
+| Replies | on | Lists with bullets, Korean bold, the narration bar, no reply bullet |
+| Tool lines | on | Tool calls as one line that opens on a click |
 | Info band | on | The band above the prompt |
 | Band: model | off | Model and effort, for a status line that does not show them |
 | Band: context | off | Context fill, for a status line that does not show it: blue while calm, the theme's warning amber from 300k tokens or 70%, its error red from 500k tokens or 90%, whichever comes first. After a compaction it drops to the engine's estimate at once, and the next response measures it |
+
+Each of the three drawing switches, when off, leaves that part to the engine or to a mod beneath, so only the parts you want are drawn here: with only **Your prompts** on, a mod such as prismantis can draw the replies and tool calls (turn its own prompt style off).
 
 The cost is what Claude Code computes at API prices; on a subscription it is not what you are billed.
 

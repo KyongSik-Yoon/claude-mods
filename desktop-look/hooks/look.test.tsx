@@ -156,6 +156,26 @@ for (const component of ['ToolUse', 'ToolGroup', 'ToolResult'] as const) {
 const mountTool = ($: Engine, component: 'ToolUse' | 'ToolResult' | 'ToolGroup', props: object) =>
   $.ui.mount({ plugin: 'desktop-look', surface: 'terminal', component, requestId: 't1', props } as never)
 
+// Only the prompt drawn: replies and tool calls left to the engine (or a mod
+// beneath, such as prismantis), as they reach it.
+test('terminal: with replies and tools off, only the prompt is drawn', { options: { showReplies: false, showTools: false } }, async ($, on) => {
+  const seen = engine(on)
+  const prompt = await (await $.ui.mount({ plugin: 'desktop-look', surface: 'terminal', component: 'UserMessage', props: PROMPT })).drawn()
+  expect(bars(prompt)).toEqual([expect.objectContaining({ props: expect.objectContaining({ backgroundColor: 'claude' }) })])
+  const reply = { text: '- 하나\n- 둘\n\n**"인용"**을', isFirstOfReply: true }
+  expect(texts(await (await $.ui.mount({ plugin: 'desktop-look', surface: 'terminal', component: 'AssistantMessage', props: reply })).drawn())).toEqual(['ENGINE'])
+  expect(seen.at(-1)).toEqual(reply)
+  for (const component of ['ToolUse', 'ToolResult', 'ToolGroup'] as const) {
+    expect(texts(await (await mountTool($, component, TOOL[component])).drawn())).toEqual(['ENGINE'])
+  }
+})
+
+test('terminal: with the prompt off, the engine draws it', { options: { showPrompt: false } }, async ($, on) => {
+  engine(on)
+  const tree = await (await $.ui.mount({ plugin: 'desktop-look', surface: 'terminal', component: 'UserMessage', props: PROMPT })).drawn()
+  expect(texts(tree)).toEqual(['ENGINE'])
+})
+
 test('terminal: a press opens the engine\'s row and its result, and a second folds them', async ($, on) => {
   engine(on)
   const row = await mountTool($, 'ToolUse', TOOL.ToolUse)
