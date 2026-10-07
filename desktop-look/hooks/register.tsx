@@ -1,5 +1,5 @@
 import { atom, memberOf, read, update } from 'claude-code'
-import type { PromptOrigin, Register, RenderNode } from 'claude-code'
+import type { ClientElements, PromptOrigin, Register, RenderNode } from 'claude-code'
 
 import type { Context, Edits, Model } from '../types'
 
@@ -444,6 +444,43 @@ export const mended = (text: string): string => {
   return out === text ? text : out
 }
 
+// The lists of an approved plan's text, when it has any.
+export const planPieces = (output: unknown): Piece[] | null => {
+  if (typeof output !== 'object' || output === null || !('plan' in output)) return null
+  return typeof output.plan === 'string' ? listed(mended(output.plan)) : null
+}
+
+// Text with lists, drawn: each item a row, its mark, then its text in a
+// column, so wrapped lines hang under the text; a list at the left edge set
+// in by two. The rest goes to the engine's Markdown, styling and all.
+const setIn = (ui: Pick<ClientElements, 'Box' | 'Text' | 'Markdown'>, pieces: readonly Piece[]): RenderNode[] => {
+  const { Box, Text, Markdown } = ui
+  const draw = (pieces: readonly Piece[], depth: number): RenderNode[] =>
+    pieces.map((piece, at) => (
+      <Box flexDirection="column" marginTop={at > 0 && piece.gap ? 1 : 0}>
+        {piece.kind === 'text' ? <Markdown text={piece.text} /> : drawList(piece, depth)}
+      </Box>
+    ))
+  const drawList = (list: List, depth: number): RenderNode => {
+    const shown = marks(list, depth)
+    return (
+      <Box flexDirection="column" paddingLeft={depth === 0 ? 2 : 0}>
+        {list.items.map((item, i) => (
+          <Box flexDirection="row" marginTop={i > 0 && list.loose ? 1 : 0}>
+            <Box flexShrink={0}>
+              <Text>{shown[i]}</Text>
+            </Box>
+            <Box flexDirection="column" flexShrink={1} flexGrow={1}>
+              {draw(item, depth + 1)}
+            </Box>
+          </Box>
+        ))}
+      </Box>
+    )
+  }
+  return draw(pieces, 0)
+}
+
 export const register: Register = (on, options) => {
   const width = WIDTHS.find(w => w === options.bubbleWidth) ?? '75%'
   const spacer = `${100 - parseInt(width, 10)}%`
@@ -509,6 +546,20 @@ export const register: Register = (on, options) => {
       await update($, COST, () => usd)
     }
     return next(e)
+  })
+
+  // No response reports the context a compaction left until the next one is
+  // answered: count it now, so the band drops when the conversation does.
+  on('session.compact', async ($, e, next) => {
+    const done = await next(e)
+    if (e.agentId !== undefined || e.trigger === 'precompute' || !done.messages) return done
+    const { context } = await $.session.usage({ breakdown: 'summary' })
+    const tokens = context.breakdown?.totalTokens ?? done.tokensAfter
+    if (tokens !== undefined) {
+      const percent = Math.min(100, Math.round((tokens / context.window) * 100))
+      await update($, CONTEXT, () => ({ window: context.window, tokens, percent }))
+    }
+    return done
   })
 
   on('tool.call', async ($, e, next) => {
@@ -636,37 +687,12 @@ export const register: Register = (on, options) => {
     if (e.surface !== 'terminal') return next(e)
     const plain = { ...e, props: { ...e.props, text: mended(e.props.text), isFirstOfReply: false } }
     if (e.props.isSummary) return next(plain)
-    const { Box, Text, Markdown } = $.ui.resolve(e)
-    const draw = (pieces: readonly Piece[], depth: number): RenderNode[] =>
-      pieces.map((piece, at) => (
-        <Box flexDirection="column" marginTop={at > 0 && piece.gap ? 1 : 0}>
-          {piece.kind === 'text' ? <Markdown text={piece.text} /> : drawList(piece, depth)}
-        </Box>
-      ))
-    // Each item a row: its mark, then its text in a column, so wrapped lines
-    // hang under the text; a list at the left edge set in by two.
-    const drawList = (list: List, depth: number): RenderNode => {
-      const shown = marks(list, depth)
-      return (
-        <Box flexDirection="column" paddingLeft={depth === 0 ? 2 : 0}>
-          {list.items.map((item, i) => (
-            <Box flexDirection="row" marginTop={i > 0 && list.loose ? 1 : 0}>
-              <Box flexShrink={0}>
-                <Text>{shown[i]}</Text>
-              </Box>
-              <Box flexDirection="column" flexShrink={1} flexGrow={1}>
-                {draw(item, depth + 1)}
-              </Box>
-            </Box>
-          ))}
-        </Box>
-      )
-    }
+    const { Box } = $.ui.resolve(e)
     // Opens with a blank row as the engine's drawing does.
     const pieces = listed(plain.props.text)
     const reply = pieces ? (
       <Box flexDirection="column" marginTop={1}>
-        {draw(pieces, 0)}
+        {setIn($.ui.resolve(e), pieces)}
       </Box>
     ) : (
       await next(plain)
@@ -733,9 +759,21 @@ export const register: Register = (on, options) => {
   on('ui.render', { component: 'ToolResult' }, async ($, e, next) => {
     if (e.surface !== 'terminal' || e.viewport?.isFullscreen === false) return next(e)
     const open = (await read($, memberOf(OPEN, e))) !== OPEN_BY_DEFAULT.has(e.props.tool)
-    if (open) return next(e)
     const { Box } = $.ui.resolve(e)
-    return <Box />
+    if (!open) return <Box />
+    // An approved plan: the engine's lines above it, its lists drawn as a
+    // reply's are, under the engine's `⎿` gutter.
+    const pieces = e.props.tool === 'ExitPlanMode' && !e.props.isErrored ? planPieces(e.props.output) : null
+    if (!pieces) return next(e)
+    const output = e.props.output as Record<string, unknown>
+    return (
+      <Box flexDirection="column">
+        {await next({ ...e, props: { ...e.props, output: { ...output, plan: JOINER } } })}
+        <Box flexDirection="column" paddingLeft={5}>
+          {setIn($.ui.resolve(e), pieces)}
+        </Box>
+      </Box>
+    )
   })
 
   // A folded run of reads and searches: one dim count line; a press unfolds it

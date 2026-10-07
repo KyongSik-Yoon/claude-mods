@@ -251,7 +251,15 @@ const engineFor = (on: On, extra?: (on: On) => void, messages: Api[] = []) => {
   const seen = engine(on)
   on('session.start', () => ({ cwd: '/tmp' }))
   on('session.model', () => ({ value: 'claude-haiku-4-5-20251001' }))
-  on('session.usage', () => ({ value: { startedAt: 0, context: { window: 200_000 }, rateLimits: [], cost: { usd: 0 } } }))
+  // A breakdown asked for estimates 56k held.
+  on('session.usage', (_$, e) => ({
+    value: {
+      startedAt: 0,
+      context: { window: 200_000, ...(e.breakdown ? { breakdown: { categories: [], totalTokens: 56_000 } } : {}) },
+      rateLimits: [],
+      cost: { usd: 0 },
+    },
+  }) as never)
   on('session.measure', (_$, e) => ({ changed: e.changed }))
   on('session.id', () => ({ value: 's1' }))
   on('session.messages', () => ({ value: messages }))
@@ -618,4 +626,33 @@ test('context pressure follows the tokens held, or the window share, whichever b
   expect(pressure({ tokens: 140_000, window: 200_000, percent: 70 })).toBe('warn')
   expect(pressure({ tokens: 180_000, window: 200_000, percent: 90 })).toBe('alert')
   expect(pressure({ window: 200_000 })).toBe('calm')
+})
+
+test('terminal: a compaction drops the band to the context it left, before the next response', { options: { bandContext: true } }, async ($, on) => {
+  engineFor(on, on => on('session.compact', () => ({ messages: [{ role: 'user' as const, text: 'summary', toolUses: [] }], tokensBefore: 150_000, tokensAfter: 10_000 })))
+  await start($)
+  await $.session.measure({ context: { tokens: 150_000, window: 200_000, percent: 75 }, rateLimits: [], changed: ['context'] })
+  expect(await bandText($)).toContain('75% · 150k/200k')
+  await $.session.compact({ trigger: 'manual', messages: [{ role: 'user', text: 'hi', toolUses: [] }] })
+  expect(await bandText($)).toContain('28% · 56k/200k')
+})
+
+const PLAN = { tool_use_id: 't1', tool: 'ExitPlanMode', isErrored: false }
+
+test('terminal: an approved plan keeps the engine\'s lines and draws its lists with bullets', async ($, on) => {
+  const seen = engine(on)
+  const output = { plan: '# 계획\n\n- 하나\n  - 안쪽\n- 둘\n\n1. 먼저', isAgent: false, filePath: '/p.md' }
+  const tree = await (await mountTool($, 'ToolResult', { ...PLAN, output })).drawn()
+  expect(seen[0]?.output).toEqual({ ...output, plan: '​' })
+  expect(texts(tree)).toEqual(['ENGINE', '• ', '◦ ', '• ', '1. '])
+  expect(walk(tree).flatMap(n => (n.type === 'Markdown' ? [n.props.text] : []))).toEqual(['# 계획', '하나', '안쪽', '둘', '먼저'])
+})
+
+test('terminal: a plan without lists, or a refused one, is the engine\'s', async ($, on) => {
+  const seen = engine(on)
+  const output = { plan: '# 계획\n\n그냥 문단', isAgent: false }
+  await (await mountTool($, 'ToolResult', { ...PLAN, output })).drawn()
+  const props = { ...PLAN, tool_use_id: 't2', isErrored: true, output: { ...output, plan: '- a' } }
+  await (await $.ui.mount({ plugin: 'desktop-look', surface: 'terminal', component: 'ToolResult', requestId: 't2', props })).drawn()
+  expect(seen.map(p => (p.output as { plan: string }).plan)).toEqual(['# 계획\n\n그냥 문단', '- a'])
 })
