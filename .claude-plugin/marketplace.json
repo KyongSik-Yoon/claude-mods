@@ -18,7 +18,7 @@
       "name": "desktop-look",
       "source": "./desktop-look",
       "description": "Make the terminal transcript look like the Claude Code apps: your prompts in a round bubble, tool calls as one line with a state mark, lists set in with bullets, the text between tool calls set apart, and an info band",
-      "version": "0.11.0"
+      "version": "0.12.0"
     }
   ]
 }

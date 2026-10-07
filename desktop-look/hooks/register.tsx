@@ -1,5 +1,5 @@
 import { atom, memberOf, read, update } from 'claude-code'
-import type { ClientElements, PromptOrigin, Register, RenderNode } from 'claude-code'
+import type { ClientElements, CoreEngineInterface, PromptOrigin, Register, RenderNode, StateDollar } from 'claude-code'
 
 import type { Context, Edits, Model } from '../types'
 
@@ -444,6 +444,83 @@ export const mended = (text: string): string => {
   return out === text ? text : out
 }
 
+// `git diff --numstat` read as one stat: a binary file (`-`) counts as a file
+// with no lines.
+export const numstat = (out: string): Edits => {
+  const rows = out.split('\n').filter(row => row.includes('\t'))
+  const count = (n: string | undefined) => (n === undefined || n === '-' ? 0 : Number(n) || 0)
+  return rows.reduce<Edits>(
+    (sum, row) => {
+      const [added, removed] = row.split('\t')
+      return { files: sum.files + 1, added: sum.added + count(added), removed: sum.removed + count(removed) }
+    },
+    { files: 0, added: 0, removed: 0 },
+  )
+}
+
+// A text file's lines as git counts them added; null for a binary one.
+export const linesOf = (text: string): number | null =>
+  text.includes('\0') ? null : text === '' ? 0 : text.replace(/\n$/, '').split('\n').length
+
+// What counting the working copy needs of `$`.
+type Git = Pick<CoreEngineInterface, 'process' | 'fs'>
+
+// Git's empty tree, what a repository with no commit yet diffs against.
+const EMPTY_TREE = '4b825dc642cb6eb9a060e54bf8d69288fbee4904'
+// Past this many new files, the rest count as files without their lines.
+const UNTRACKED_READ = 200
+
+// The working copy's changes not yet committed, as the reviewer and the
+// desktop app's diff count them: tracked files against HEAD, staged or not,
+// and each new file not ignored, all its lines added. Null outside a repository.
+const uncommitted = async ($: Git): Promise<Edits | null> => {
+  const top = await $.process.run(['git', 'rev-parse', '--show-toplevel'])
+  if (top.exitCode !== 0) return null
+  // From the top, so a session in a subfolder counts the whole repository.
+  const root = top.stdout.trim()
+  const git = (...args: string[]) => $.process.run(['git', ...args], { cwd: root })
+  let diff = await git('diff', 'HEAD', '--numstat')
+  if (diff.exitCode !== 0) diff = await git('diff', EMPTY_TREE, '--numstat')
+  if (diff.exitCode !== 0) return null
+  const stat = numstat(diff.stdout)
+  const others = await git('ls-files', '--others', '--exclude-standard', '-z')
+  const fresh = others.exitCode === 0 ? others.stdout.split('\0').filter(Boolean) : []
+  let added = 0
+  for (const file of fresh.slice(0, UNTRACKED_READ)) {
+    try {
+      added += linesOf(await $.fs.read(`${root}/${file}`)) ?? 0
+    } catch {
+      // Over the read limit or gone since: a file without its lines.
+    }
+  }
+  return { files: stat.files + fresh.length, added: stat.added + added, removed: stat.removed }
+}
+
+// One count of the working copy at a time; a call while one runs counts
+// again once it is done, so the last change is in the figure.
+let counting: Promise<void> | null = null
+let stale = false
+const recount = ($: Git & StateDollar): Promise<void> => {
+  if (counting) {
+    stale = true
+    return counting
+  }
+  counting = (async () => {
+    do {
+      stale = false
+      const edits = await uncommitted($).catch(() => null)
+      await update($, EDITS, () => edits)
+    } while (stale)
+  })().finally(() => {
+    counting = null
+  })
+  return counting
+}
+
+// Tools that may change the working copy: an edit, or a command (a commit, a
+// checkout, a script).
+const CHANGES_FILES: ReadonlySet<string> = new Set(['Edit', 'MultiEdit', 'Write', 'NotebookEdit', 'Bash'])
+
 // The lists of an approved plan's text, when it has any.
 export const planPieces = (output: unknown): Piece[] | null => {
   if (typeof output !== 'object' || output === null || !('plan' in output)) return null
@@ -489,13 +566,14 @@ export const register: Register = (on, options) => {
   const bandContext = options.bandContext === true
 
   // The band's figures: seeded when the session starts, then pushed by the
-  // engine (each main-loop step, each measurement, each tool call).
+  // engine (each main-loop step, each measurement, each tool call); the
+  // working copy's changes counted again after each step and each call that
+  // may change it.
   on('session.start', async ($, e, next) => {
     const started = await next(e)
-    const [id, usage, session, messages] = await Promise.all([
+    const [id, usage, messages] = await Promise.all([
       $.session.model(),
       $.session.usage(),
-      $.session.id(),
       $.session.messages({ as: 'api' }),
     ])
     await update($, MODEL, model => model ?? { id })
@@ -504,8 +582,7 @@ export const register: Register = (on, options) => {
     await update($, TOOLS, () => [])
     // A resumed transcript's text between tool calls, read off the messages.
     await update($, NARRATION, () => narrations(messages))
-    // A reload keeps the session's tally; a new session (/clear) starts over.
-    await update($, EDITS, edits => (edits?.session === session ? edits : { session, files: [], added: 0, removed: 0 }))
+    void recount($)
     return started
   })
 
@@ -532,6 +609,8 @@ export const register: Register = (on, options) => {
       streamed.some(p => p !== null) || !step.answer.trim() ? streamed : [step.answer, ...step.toolUses.map(() => null)]
     const said = between(pieces, e.index > 0)
     if (said.length > 0) await update($, NARRATION, kept => [...kept, ...said].slice(-NARRATION_KEPT))
+    // What the person changed or committed in the meantime.
+    void recount($)
     return step
   })
 
@@ -567,18 +646,7 @@ export const register: Register = (on, options) => {
     await update($, TOOLS, tools => [...tools, label])
     try {
       const done = await next(e)
-      const stat = 'result' in done && !done.isError ? diffStat(e.tool, done.result) : null
-      if (stat) {
-        await update($, EDITS, (edits: Edits | null): Edits => {
-          const base = edits ?? { session: '', files: [], added: 0, removed: 0 }
-          return {
-            session: base.session,
-            files: base.files.includes(stat.file) ? base.files : [...base.files, stat.file],
-            added: base.added + stat.added,
-            removed: base.removed + stat.removed,
-          }
-        })
-      }
+      if (CHANGES_FILES.has(e.tool)) void recount($)
       return done
     } finally {
       await update($, TOOLS, tools => {
@@ -602,17 +670,19 @@ export const register: Register = (on, options) => {
     ])
     const model = bandModel ? stored : null
     const context = bandContext ? measured : null
-    const edited = edits && edits.files.length > 0 ? edits : null
+    const edited = edits && edits.files > 0 ? edits : null
     const spent = cost !== null && cost > 0 ? cost : null
     if (!model && context?.percent === undefined && tools.length === 0 && !edited && spent === null) return next(e)
     const { Box, Text } = $.ui.resolve(e)
 
-    // The left: what this session changed and spent, then the model when on.
+    // The left: what the working copy holds uncommitted and the session spent, then the model when on.
     const left: RenderNode[] = []
     if (edited) {
       left.push(
         <Text>
-          <Text dimColor>✎ {String(edited.files.length)} {edited.files.length === 1 ? 'file' : 'files'} </Text>
+          <Text dimColor>
+            {String(edited.files)} {edited.files === 1 ? 'file' : 'files'}{' '}
+          </Text>
           <Text color="green">+{String(edited.added)}</Text>
           <Text dimColor> </Text>
           <Text color="red">-{String(edited.removed)}</Text>
@@ -626,7 +696,7 @@ export const register: Register = (on, options) => {
     if (tools.length > 0) {
       // What the left half and the gaps leave; the context fill takes its own.
       const used =
-        (edited ? `✎ ${edited.files.length} files +${edited.added} -${edited.removed}`.length + 2 : 0) +
+        (edited ? `${edited.files} files +${edited.added} -${edited.removed}`.length + 2 : 0) +
         (spent !== null ? dollars(spent).length + 2 : 0) +
         (model ? modelLabel(model.id).length + (model.effort?.length ?? 0) + 7 : 0) +
         (context?.percent !== undefined ? 30 : 0)

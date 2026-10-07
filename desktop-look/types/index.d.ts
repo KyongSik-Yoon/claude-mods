@@ -4,8 +4,8 @@ export type Model = { id: string; effort?: string }
 // The live context window, as the engine last measured it.
 export type Context = { tokens?: number; window: number; percent?: number }
 
-// What this session's file edits came to, as the desktop app's diff stat reads.
-export type Edits = { session: string; files: string[]; added: number; removed: number }
+// The working copy's uncommitted changes, as the desktop app's diff stat reads.
+export type Edits = { files: number; added: number; removed: number }
 
 declare module 'claude-code' {
   interface PluginState {

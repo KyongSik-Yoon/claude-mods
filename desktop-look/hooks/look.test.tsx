@@ -11,11 +11,13 @@ import {
   dollars,
   fill,
   groupLabel,
+  linesOf,
   listed,
   marks,
   mended,
   modelLabel,
   narrations,
+  numstat,
   pressure,
   runningLabel,
   toolLabel,
@@ -594,22 +596,54 @@ test('cost reads as the desktop app shows it', () => {
   expect(dollars(1.234)).toBe('$1.23')
 })
 
-test('terminal: the band tallies this session\'s edits and cost', async ($, on) => {
-  engineFor(on, on =>
-    on('tool.call', (_$, e) => {
-      const file = (e as unknown as { file_path: string }).file_path
-      return { result: { filePath: file, structuredPatch: [{ lines: ['+x', '+y', '-z'] }] } } as never
-    }),
-  )
+// A working copy: `a.ts` changed, `b.bin` binary, two new files not ignored.
+const gitFor = (on: On, runs: string[][]) => {
+  on('process.run', (_$, e) => {
+    runs.push([...e.argv])
+    const [, command] = e.argv
+    const stdout =
+      command === 'rev-parse' ? '/repo\n' : command === 'diff' ? '2\t1\ta.ts\n-\t-\tb.bin\n' : command === 'ls-files' ? 'new.md\0pic.png\0' : ''
+    return { value: { exitCode: 0, stdout, stderr: '' } } as never
+  })
+  on('fs.read', (_$, e) => ({ value: e.path === '/repo/new.md' ? 'one\ntwo\nthree\n' : 'PNG\0data' }) as never)
+}
+
+test('terminal: the band shows the working copy\'s uncommitted changes and the cost', async ($, on) => {
+  const runs: string[][] = []
+  engineFor(on, on => {
+    gitFor(on, runs)
+    on('tool.call', () => ({ result: {} }) as never)
+  })
   await start($)
   await $.tool.call({ tool: 'Edit', file_path: '/a.ts' } as never)
-  await $.tool.call({ tool: 'Edit', file_path: '/a.ts' } as never)
-  await $.tool.call({ tool: 'Edit', file_path: '/b.ts' } as never)
+  await $.tool.call({ tool: 'Read', file_path: '/a.ts' } as never)
   await $.session.measure({ context: { window: 200_000 }, rateLimits: [], cost: { usd: 0.42 }, changed: ['cost'] })
   const shown = await bandText($)
-  expect(shown).toMatch(/✎ 2 files +\+6 +-3/)
+  expect(shown).toMatch(/^ ?4 files +\+5 +-1/)
+  expect(shown).not.toContain('✎')
   expect(shown).toContain('$0.42')
   expect(shown).not.toContain('◆')
+  // Counted as the session started and after the Edit, not after the Read.
+  expect(runs.filter(r => r[1] === 'diff')).toEqual([
+    ['git', 'diff', 'HEAD', '--numstat'],
+    ['git', 'diff', 'HEAD', '--numstat'],
+  ])
+})
+
+test('terminal: outside a repository the band shows no changes', async ($, on) => {
+  engineFor(on, on => on('process.run', () => ({ value: { exitCode: 128, stdout: '', stderr: 'not a git repository' } }) as never))
+  await start($)
+  await $.session.measure({ context: { window: 200_000 }, rateLimits: [], cost: { usd: 0.42 }, changed: ['cost'] })
+  expect(await bandText($)).toMatch(/^\$0\.42/)
+})
+
+test('git counts read as one stat', () => {
+  expect(numstat('2\t1\ta.ts\n-\t-\tb.bin\n10\t0\tsrc/{a => b}.ts\n')).toEqual({ files: 3, added: 12, removed: 1 })
+  expect(numstat('')).toEqual({ files: 0, added: 0, removed: 0 })
+  expect(linesOf('a\nb')).toBe(2)
+  expect(linesOf('a\nb\n')).toBe(2)
+  expect(linesOf('')).toBe(0)
+  expect(linesOf('x\0y')).toBeNull()
 })
 
 test('running tools read by name, and fall back to a count when there is no room', () => {
