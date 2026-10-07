@@ -342,7 +342,18 @@ test('narration: the text between a turn\'s first and last tool calls', () => {
 })
 
 const text = (t: string, gap = false) => ({ kind: 'text', text: t, gap })
-const list = (marker: string, items: unknown[][], more: object = {}) => ({ kind: 'list', marker, start: 1, loose: false, items, gap: false, ...more })
+const list = (marker: string, items: unknown[][], more: object = {}) => ({
+  kind: 'list',
+  marker,
+  start: 1,
+  loose: false,
+  items,
+  tasks: items.map(() => null),
+  gap: false,
+  ...more,
+})
+const rule = (gap = false) => ({ kind: 'rule', gap })
+const quote = (pieces: unknown[], gap = false) => ({ kind: 'quote', pieces, gap })
 const lines = (s: string) => cut(s.split('\n'))
 
 test('lists: a reply is cut where its lists are', () => {
@@ -364,8 +375,11 @@ test('lists: what is not a list stays the engine\'s', () => {
   // Code, even with a list in it.
   expect(lines('```js\n- 코드\n1. 번호\n```')).toEqual([text('```js\n- 코드\n1. 번호\n```')])
   expect(lines('- a\n  ```\n  - x\n  ```')).toEqual([list('-', [[text('a\n```\n- x\n```')]])])
-  // Rules, and a bold run at the start of a line.
-  expect(lines('* * *\n- - -\n**굵게** 시작')).toEqual([text('* * *\n- - -\n**굵게** 시작')])
+  // A bold run at the start of a line, and dashes under a paragraph, which
+  // make it a heading.
+  expect(lines('**굵게** 시작\n제목\n---')).toEqual([text('**굵게** 시작\n제목\n---')])
+  // A quote of text alone stays in the text.
+  expect(lines('앞\n> 인용 **굵게**\n> > 중첩\n뒤')).toEqual([text('앞\n> 인용 **굵게**\n> > 중첩\n뒤')])
   // Within a paragraph only a list with text, numbered from 1, starts.
   expect(lines('문단\n2. 둘째')).toEqual([text('문단\n2. 둘째')])
   expect(lines('문단\n-')).toEqual([text('문단\n-')])
@@ -374,12 +388,30 @@ test('lists: what is not a list stays the engine\'s', () => {
   expect(listed('<context>x</context>\n- a')).toBeNull()
 })
 
+test('lists: rules, quotes holding a list, and task boxes are cut out too', () => {
+  expect(lines('* * *\n- - -\n문단\n\n---')).toEqual([rule(), rule(), text('문단'), rule(true)])
+  // A quote's own lines, markers off, cut as any text; a lazy line carries on
+  // its paragraph.
+  expect(lines('> # 제목\n> - a\n> - b\n>\n> 뒤\n이어짐\n\n밖')).toEqual([
+    quote([text('# 제목'), list('-', [[text('a')], [text('b')]]), text('뒤\n이어짐', true)]),
+    text('밖', true),
+  ])
+  expect(lines('> > - 깊이')).toEqual([quote([quote([list('-', [[text('깊이')]])])])])
+  expect(lines('- [ ] 할 일\n- [x] 끝\n- [X] 대문자\n- [ ]\n- 보통')).toEqual([
+    list('-', [[text('할 일')], [text('끝')], [text('대문자')], [text('[ ]')], [text('보통')]], { tasks: [false, true, true, null, null] }),
+  ])
+  expect(listed('> 인용만')).toBeNull()
+  expect(listed('구분\n\n---\n\n선')).not.toBeNull()
+})
+
 test('lists: numbers count from the start and line up; bullets follow the depth', () => {
   expect(marks(list('.', [[], [], []]) as never, 0)).toEqual(['1. ', '2. ', '3. '])
   expect(marks(list('.', [[], []], { start: 9 }) as never, 0)).toEqual([' 9. ', '10. '])
   expect(marks(list('-', [[]]) as never, 0)).toEqual(['• '])
   expect(marks(list('-', [[]]) as never, 1)).toEqual(['◦ '])
   expect(marks(list('*', [[]]) as never, 5)).toEqual(['▪ '])
+  expect(marks(list('-', [[], [], []], { tasks: [false, true, null] }) as never, 0)).toEqual(['☐ ', '☑ ', '• '])
+  expect(marks(list('.', [[], []], { tasks: [false, true] }) as never, 0)).toEqual(['1. ☐ ', '2. ☑ '])
 })
 
 test('terminal: a reply with a list is drawn here, its prose by the Markdown element', async ($, on) => {
@@ -395,6 +427,16 @@ test('terminal: a reply with a list is drawn here, its prose by the Markdown ele
   expect(markdown(tree)).toEqual(['해결 방법', '**첫째:** 하나', '곁들임', '둘째', '끝.'])
   // Set in from the left edge, as the apps indent a list.
   expect(boxes(tree).some(b => b.props?.paddingLeft === 2)).toBe(true)
+})
+
+test('terminal: a quote holding a list gets the dim bar, and a rule a dim line', async ($, on) => {
+  engine(on)
+  const props = { text: '> 인용\n> - 하나\n\n---\n\n끝', isFirstOfReply: true }
+  const tree = await (await $.ui.mount({ plugin: 'desktop-look', surface: 'terminal', component: 'AssistantMessage', props })).drawn()
+  const bar = boxes(tree).find(b => b.props?.position === 'absolute')
+  expect(bar?.props).toEqual(expect.objectContaining({ width: 1, height: '100%', overflow: 'hidden' }))
+  expect(texts(tree).map(t => t.charAt(0))).toEqual(['▎', '•', '─'])
+  expect(markdown(tree)).toEqual(['인용', '하나', '끝'])
 })
 
 const J = '\u200B'

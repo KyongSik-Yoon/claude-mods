@@ -261,7 +261,9 @@ export const clip = (s: string, room: number): string => {
 // as the engine's markdown. `gap` when a blank line came before the piece.
 export type Piece =
   | { kind: 'text'; text: string; gap: boolean }
-  | { kind: 'list'; marker: string; start: number; loose: boolean; items: Piece[][]; gap: boolean }
+  | { kind: 'list'; marker: string; start: number; loose: boolean; items: Piece[][]; tasks: (boolean | null)[]; gap: boolean }
+  | { kind: 'quote'; pieces: Piece[]; gap: boolean }
+  | { kind: 'rule'; gap: boolean }
 
 type Item = { marker: string; start: number; col: number; empty: boolean }
 type Fence = { mark: string; length: number } | null
@@ -271,6 +273,8 @@ const RULE = /^ {0,3}([-*_])(?: *\1){2,} *$/
 const HEADING = /^ {0,3}#{1,6}(?: |$)/
 const QUOTE = /^ {0,3}>/
 const FENCE = /^ {0,3}(`{3,}|~{3,})/
+// A task item's box, `[ ]` or `[x]`, and the text after it.
+const TASK = /^\[([ xX])\] +(\S.*)$/
 
 // A list item's first line, as CommonMark reads it: its marker and the column
 // its text starts at (past one to four spaces; five or more begin indented code).
@@ -303,10 +307,13 @@ type List = Piece & { kind: 'list' }
 // item's lines those indented to its text, plus lazy lines carrying on its
 // paragraph. Blank lines after the last item stay the caller's.
 const listAt = (lines: readonly string[], at: number, head: Item): [List, number] => {
-  const list: List = { kind: 'list', marker: head.marker, start: head.start, loose: false, items: [], gap: false }
+  const list: List = { kind: 'list', marker: head.marker, start: head.start, loose: false, items: [], tasks: [], gap: false }
   let i = at
   for (let item = head; ; ) {
     let last = (lines[i] ?? '').slice(item.col)
+    const task = TASK.exec(last)
+    list.tasks.push(task ? task[1] !== ' ' : null)
+    if (task) last = task[2] ?? ''
     const body = [last]
     let fence = fenceAfter(null, last)
     for (i++; i < lines.length; i++) {
@@ -326,6 +333,25 @@ const listAt = (lines: readonly string[], at: number, head: Item): [List, number
     list.loose ||= blank > 0
     item = next
   }
+}
+
+type Quote = Piece & { kind: 'quote' }
+
+// One block quote from `at`: its `>` lines, and lazy lines carrying on its
+// paragraph; its own lines, markers off, cut into pieces as any text is.
+const quoteAt = (lines: readonly string[], at: number): [Quote, number] => {
+  const inner: string[] = []
+  let i = at
+  let fence: Fence = null
+  for (; i < lines.length; i++) {
+    const line = lines[i] ?? ''
+    const last = inner[inner.length - 1] ?? ''
+    if (QUOTE.test(line)) inner.push(line.replace(/^ {0,3}> ?/, ''))
+    else if (!fence && isParagraph(last) && isParagraph(line) && !FENCE.test(line) && !itemAt(line)) inner.push(line.trimStart())
+    else break
+    fence = fenceAfter(fence, inner[inner.length - 1] ?? '')
+  }
+  return [{ kind: 'quote', pieces: cut(inner), gap: false }, i]
 }
 
 // Lines into pieces. A list may break into a paragraph only as CommonMark
@@ -349,6 +375,29 @@ export const cut = (lines: readonly string[]): Piece[] => {
   let paragraph = false
   for (let i = 0; i < lines.length; ) {
     const line = lines[i] ?? ''
+    // A quote holding something drawn here is a piece of its own; one that
+    // holds only text stays in the text, as the engine draws it.
+    if (!fence && QUOTE.test(line)) {
+      const [quote, next] = quoteAt(lines, i)
+      if (quote.pieces.some(p => p.kind !== 'text')) {
+        flush()
+        pieces.push({ ...quote, gap })
+        gap = false
+        paragraph = false
+        i = next
+        continue
+      }
+    }
+    // A rule, which the engine draws as its dashes; `---` under a paragraph
+    // underlines a heading instead.
+    if (!fence && RULE.test(line) && !(paragraph && line.trim().startsWith('-'))) {
+      flush()
+      pieces.push({ kind: 'rule', gap })
+      gap = false
+      paragraph = false
+      i++
+      continue
+    }
     const item = fence ? null : itemAt(line)
     if (item && (!paragraph || (!item.empty && (!numbered(item.marker) || item.start === 1)))) {
       flush()
@@ -369,22 +418,29 @@ export const cut = (lines: readonly string[]): Piece[] => {
   return pieces
 }
 
-// The pieces of a reply worth drawing here: null when it has no list, or
-// holds what only the engine's own drawing hides or can take.
+// The pieces of a reply worth drawing here: null when it has no list, rule
+// or quote holding one, or holds what only the engine's own drawing hides or
+// can take.
 export const listed = (text: string): Piece[] | null => {
   if (text.length > 50_000 || text.includes('<context>')) return null
   const pieces = cut(text.split('\n'))
-  return pieces.some(p => p.kind === 'list') ? pieces : null
+  return pieces.some(p => p.kind !== 'text') ? pieces : null
 }
 
 const BULLETS = '•◦▪'
+// A task's box, open or ticked, as the apps draw it.
+const BOXES = { open: '☐', done: '☑' } as const
 
 // Each item's mark: its number, as the list counts from its start, or the
-// bullet for its depth; numbers right-aligned to the widest.
+// bullet for its depth; a task's box in place of its bullet, or after its
+// number; numbers right-aligned to the widest.
 export const marks = (list: List, depth: number): string[] => {
-  const said = list.items.map((_, i) =>
-    numbered(list.marker) ? `${list.start + i}${list.marker}` : BULLETS.charAt(Math.min(depth, BULLETS.length - 1)),
-  )
+  const said = list.items.map((_, i) => {
+    const task = list.tasks[i]
+    const box = task === undefined || task === null ? null : task ? BOXES.done : BOXES.open
+    if (numbered(list.marker)) return `${list.start + i}${list.marker}${box ? ` ${box}` : ''}`
+    return box ?? BULLETS.charAt(Math.min(depth, BULLETS.length - 1))
+  })
   const wide = Math.max(...said.map(m => m.length))
   return said.map(m => `${m.padStart(wide)} `)
 }
@@ -527,6 +583,10 @@ export const planPieces = (output: unknown): Piece[] | null => {
   return typeof output.plan === 'string' ? listed(mended(output.plan)) : null
 }
 
+// Taller and wider than any reply's quote or rule; the box around clips them.
+const QUOTE_BAR = Array.from({ length: 1000 }, () => '▎').join('\n')
+const RULE_LINE = '─'.repeat(500)
+
 // Text with lists, drawn: each item a row, its mark, then its text in a
 // column, so wrapped lines hang under the text; a list at the left edge set
 // in by two. The rest goes to the engine's Markdown, styling and all.
@@ -535,9 +595,30 @@ const setIn = (ui: Pick<ClientElements, 'Box' | 'Text' | 'Markdown'>, pieces: re
   const draw = (pieces: readonly Piece[], depth: number): RenderNode[] =>
     pieces.map((piece, at) => (
       <Box flexDirection="column" marginTop={at > 0 && piece.gap ? 1 : 0}>
-        {piece.kind === 'text' ? <Markdown text={piece.text} /> : drawList(piece, depth)}
+        {piece.kind === 'text'
+          ? <Markdown text={piece.text} />
+          : piece.kind === 'list'
+            ? drawList(piece, depth)
+            : piece.kind === 'quote'
+              ? drawQuote(piece, depth)
+              : drawRule()}
       </Box>
     ))
+  // The engine's dim bar down the quote's left, as tall as what it holds.
+  const drawQuote = (quote: Quote, depth: number): RenderNode => (
+    <Box flexDirection="column" paddingLeft={2} position="relative">
+      <Box position="absolute" top={0} left={0} width={1} height="100%" overflow="hidden">
+        <Text dimColor>{QUOTE_BAR}</Text>
+      </Box>
+      {draw(quote.pieces, depth)}
+    </Box>
+  )
+  // A dim line across the width, where the engine leaves the dashes.
+  const drawRule = (): RenderNode => (
+    <Box height={1} overflow="hidden">
+      <Text dimColor>{RULE_LINE}</Text>
+    </Box>
+  )
   const drawList = (list: List, depth: number): RenderNode => {
     const shown = marks(list, depth)
     return (
