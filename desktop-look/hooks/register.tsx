@@ -34,6 +34,9 @@ const OPEN_BY_DEFAULT: ReadonlySet<string> = new Set(['TodoWrite', 'AskUserQuest
 type Tone = 'running' | 'failed' | 'done'
 const TONES = { running: { color: 'blue' }, failed: { color: 'red' }, done: { color: 'green' } } as const
 const STATE_MARK = '▎ '
+// The blank row above a line that sits right under another call's: the mark
+// runs through it in this line's colour, so a run of calls reads as one line.
+const JOIN_MARK = '▎'
 
 const MODEL = atom({ plugin: 'desktop-look', key: 'model' } as const, null)
 const CONTEXT = atom({ plugin: 'desktop-look', key: 'context' } as const, null)
@@ -41,10 +44,13 @@ const TOOLS = atom({ plugin: 'desktop-look', key: 'tools' } as const, [] as stri
 const EDITS = atom({ plugin: 'desktop-look', key: 'edits' } as const, null)
 const COST = atom({ plugin: 'desktop-look', key: 'cost' } as const, null)
 const NARRATION = atom({ plugin: 'desktop-look', key: 'narration' } as const, [] as string[])
+const JOINED = atom({ plugin: 'desktop-look', key: 'joined' } as const, [] as string[])
+const AFTER_CALL = atom({ plugin: 'desktop-look', key: 'afterCall' } as const, false)
 const OPEN = atom({ plugin: 'desktop-look', key: 'open' } as const, false)
 
 // Enough for a long session's worth of steps; older ones have scrolled away.
 const NARRATION_KEPT = 300
+const JOINED_KEPT = 1000
 
 type Patch = { lines: string[] }
 
@@ -133,7 +139,44 @@ export const between = (pieces: readonly (string | null)[], toolBefore = false):
   return found
 }
 
+// The calls of one turn whose line sits right under another call's: a call
+// with no text since the last one. `pieces` are a text, or a call's id;
+// `before` whether the turn's last block so far was a call. Answers the ids
+// and whether the last block here is a call.
+export const joinedCalls = (pieces: readonly (string | { id: string })[], before = false): [string[], boolean] => {
+  const found: string[] = []
+  let after = before
+  for (const piece of pieces) {
+    if (typeof piece === 'string') {
+      if (piece.trim()) after = false
+    } else {
+      if (after) found.push(piece.id)
+      after = true
+    }
+  }
+  return [found, after]
+}
+
 type Block = { readonly type: string; readonly [field: string]: unknown }
+
+// The same, read off a transcript in Messages API form, turn by turn.
+export const joinedIn = (messages: readonly { role: 'user' | 'assistant'; content: readonly Block[] }[]): string[] => {
+  const found: string[] = []
+  let after = false
+  for (const m of messages) {
+    if (m.role === 'user') {
+      if (!m.content.some(b => b.type === 'tool_result')) after = false
+      continue
+    }
+    const pieces = m.content.flatMap((b): (string | { id: string })[] =>
+      b.type === 'tool_use' && typeof b.id === 'string' ? [{ id: b.id }] : b.type === 'text' && typeof b.text === 'string' ? [b.text] : [],
+    )
+    const [ids, last] = joinedCalls(pieces, after)
+    found.push(...ids)
+    after = last
+  }
+  return found.slice(-JOINED_KEPT)
+}
 
 // The same, read off a transcript in Messages API form (blocks intact), turn
 // by turn: a person's prompt opens one; tool results carry it on.
@@ -579,6 +622,10 @@ const recount = ($: Git & StateDollar): Promise<void> => {
   return counting
 }
 
+// Whether a call's line runs its mark up into the row above: the call came
+// right after another, with no text between.
+const joinsAbove = async ($: StateDollar, id: string): Promise<boolean> => (await read($, JOINED)).includes(id)
+
 // Tools that may change the working copy: an edit, or a command (a commit, a
 // checkout, a script).
 const CHANGES_FILES: ReadonlySet<string> = new Set(['Edit', 'MultiEdit', 'Write', 'NotebookEdit', 'Bash'])
@@ -702,6 +749,7 @@ export const register: Register = (on, options) => {
     await update($, TOOLS, () => [])
     // A resumed transcript's text between tool calls, read off the messages.
     await update($, NARRATION, () => narrations(messages))
+    await update($, JOINED, () => joinedIn(messages))
     void recount($)
     return started
   })
@@ -712,12 +760,16 @@ export const register: Register = (on, options) => {
     await update($, MODEL, () => model)
     // The response's blocks as they stream: each text, and where calls sit.
     const blocks = new Map<number, string | null>()
+    const ids = new Map<number, string>()
     const stream = next(e)
     let item = await stream.next()
     while (!item.done) {
       const chunk = item.value
       if (chunk.kind === 'text') blocks.set(chunk.index, (blocks.get(chunk.index) ?? '') + chunk.text)
-      else if (chunk.kind === 'tool') blocks.set(chunk.index, null)
+      else if (chunk.kind === 'tool') {
+        blocks.set(chunk.index, null)
+        ids.set(chunk.index, chunk.id)
+      }
       yield chunk
       item = await stream.next()
     }
@@ -729,6 +781,11 @@ export const register: Register = (on, options) => {
       streamed.some(p => p !== null) || !step.answer.trim() ? streamed : [step.answer, ...step.toolUses.map(() => null)]
     const said = between(pieces, e.index > 0)
     if (said.length > 0) await update($, NARRATION, kept => [...kept, ...said].slice(-NARRATION_KEPT))
+    // Calls right under a call: a new turn starts after the person's prompt.
+    const order = [...blocks].sort(([a], [b]) => a - b).map(([at, piece]) => piece ?? { id: ids.get(at) ?? '' })
+    const [joined, after] = joinedCalls(order, e.index > 0 && (await read($, AFTER_CALL)))
+    await update($, AFTER_CALL, () => after)
+    if (joined.length > 0) await update($, JOINED, kept => [...kept, ...joined].slice(-JOINED_KEPT))
     // What the person changed or committed in the meantime.
     void recount($)
     return step
@@ -943,8 +1000,10 @@ export const register: Register = (on, options) => {
     const stat = isRunning || isErrored ? null : diffStat(tool, output)
     const mark = open ? '⌄' : '›'
     const tone: Tone = isErrored || isInterrupted ? 'failed' : isRunning ? 'running' : 'done'
+    const joined = await joinsAbove($, e.requestId)
     return (
-      <Box flexDirection="column" marginTop={1}>
+      <Box flexDirection="column" marginTop={joined ? 0 : 1}>
+        {joined ? <Text {...TONES[tone]}>{JOIN_MARK}</Text> : null}
         <Box flexDirection="row">
           <Text {...TONES[tone]}>{STATE_MARK}</Text>
           {isInterrupted ? (
@@ -1012,8 +1071,11 @@ export const register: Register = (on, options) => {
     const tone: Tone = failed ? 'failed' : running ? 'running' : 'done'
     const room = Math.max(10, (e.viewport?.columns ?? 80) - 10)
     const label = clip(groupLabel(calls), room)
+    const first = calls[0]
+    const joined = first?.tool_use_id !== undefined && (await joinsAbove($, first.tool_use_id))
     return (
-      <Box flexDirection="column" marginTop={1}>
+      <Box flexDirection="column" marginTop={joined ? 0 : 1}>
+        {joined ? <Text {...TONES[tone]}>{JOIN_MARK}</Text> : null}
         <Box flexDirection="row">
           <Text {...TONES[tone]}>{STATE_MARK}</Text>
           {failed ? <Text color="red">✗ </Text> : null}

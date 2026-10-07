@@ -12,6 +12,8 @@ import {
   fill,
   folded,
   groupLabel,
+  joinedCalls,
+  joinedIn,
   linesOf,
   listed,
   marks,
@@ -722,6 +724,35 @@ test('git counts read as one stat', () => {
   expect(linesOf('a\nb\n')).toBe(2)
   expect(linesOf('')).toBe(0)
   expect(linesOf('x\0y')).toBeNull()
+})
+
+test('a call right after another, no text between, joins the line above', () => {
+  expect(joinedCalls([{ id: 'a' }, { id: 'b' }, '설명', { id: 'c' }, '  ', { id: 'd' }])).toEqual([['b', 'd'], true])
+  // Carried over from the step before: its last block was a call.
+  expect(joinedCalls([{ id: 'e' }, '끝'], true)).toEqual([['e'], false])
+  const use = (id: string) => ({ type: 'tool_use', id, name: 'Read', input: {} })
+  const messages: Api[] = [
+    prompt('봐줘'),
+    { role: 'assistant', content: [{ type: 'text', text: '먼저 볼게요' }, use('r1')] },
+    results,
+    { role: 'assistant', content: [use('r2'), use('r3')] },
+    results,
+    { role: 'assistant', content: [{ type: 'text', text: '고칠게요' }, use('e1')] },
+    results,
+    prompt('다음'),
+    { role: 'assistant', content: [use('n1')] },
+  ]
+  // A new prompt starts over: n1 is the first line of its turn.
+  expect(joinedIn(messages as never)).toEqual(['r2', 'r3'])
+})
+
+test('terminal: a joined call draws its mark through the blank row above', async ($, on) => {
+  const use = (id: string) => ({ type: 'tool_use', id, name: 'Bash', input: {} })
+  engineFor(on, undefined, [prompt('봐줘'), { role: 'assistant', content: [use('t0'), use('t1')] }, results])
+  await start($)
+  const tree = await (await mountTool($, 'ToolUse', TOOL.ToolUse)).drawn()
+  expect(boxes(tree)[0]?.props?.marginTop).toBe(0)
+  expect(texts(tree).slice(0, 2)).toEqual(['▎', '▎ '])
 })
 
 test('running tools read by name, and fall back to a count when there is no room', () => {

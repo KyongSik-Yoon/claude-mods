@@ -18,6 +18,11 @@ declare module 'claude-code' {
       // The text the model wrote between two tool calls, which the transcript
       // sets apart as the mobile app does.
       narration: string[]
+      // Tool calls whose line sits right under another call's, no text
+      // between: their mark runs up into the row above, so a run reads as one
+      // line. And whether the main loop's last block was a call.
+      joined: string[]
+      afterCall: boolean
       // Whether a tool row shows what the engine draws under its one line.
       open: StateFamily<boolean>
     }
