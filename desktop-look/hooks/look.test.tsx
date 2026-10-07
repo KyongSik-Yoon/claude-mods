@@ -10,6 +10,7 @@ import {
   diffStat,
   dollars,
   fill,
+  folded,
   groupLabel,
   linesOf,
   listed,
@@ -67,17 +68,45 @@ for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount({ plugin: 'desktop-look', surface, component: 'UserMessage', props: PROMPT })
     const tree = await ui.drawn()
     if (surface === 'terminal') {
-      // An edge, no fill: at the left edge the bubble's outline sets it apart.
-      const bubble = boxes(tree).find(b => b.props?.borderStyle !== undefined)
-      expect(bubble?.props).toMatchObject({ borderStyle: 'round', borderDimColor: true, paddingX: 1 })
-      expect(boxes(tree).some(b => b.props?.backgroundColor !== undefined)).toBe(false)
+      // No outline: one cell of the theme's Claude orange down its left, the
+      // text a cell over.
+      expect(boxes(tree).some(b => b.props?.borderStyle !== undefined)).toBe(false)
+      expect(bars(tree)).toEqual([expect.objectContaining({ props: expect.objectContaining({ width: 1, backgroundColor: 'claude' }) })])
+      expect(boxes(tree).some(b => b.props?.paddingLeft === 1)).toBe(true)
       expect(texts(tree)).toEqual([PROMPT.text])
-      expect(bars(tree)).toEqual([])
       // The text in the terminal's own colour.
       expect(walk(tree).find(n => n.type === 'Text')?.props?.color).toBeUndefined()
     } else {
       expect(texts(tree)).toEqual(['ENGINE'])
     }
+  })
+
+  test(`${surface}: pasted text folds to the composer's placeholder, which a press opens`, async ($, on) => {
+    engine(on)
+    // As the engine frames it: `\n\n` before each block, `\n` after, the
+    // pasted text on lines of its own between the tags.
+    const block = (id: string, body: string) => `\n\n<pasted_content id="${id}">\n${body}\n</pasted_content id="${id}">\n`
+    const text = `봐줘 ${block('ab06', '# 제목\n> 메모\n끝')}\n그리고${block('c1', 'a\nb')}`
+    const props = { ...PROMPT, text, isExpanded: false }
+    const ui = await $.ui.mount({ plugin: 'desktop-look', surface, component: 'UserMessage', props })
+    if (surface !== 'terminal') {
+      expect(texts(await ui.drawn())).toEqual(['ENGINE'])
+      return
+    }
+    const shut = await ui.drawn()
+    expect(texts(shut)).toEqual(['봐줘', ' ', '그리고', ' '])
+    expect(labels(shut)).toEqual(['[Pasted text +2 lines]', '›', '[Pasted text +1 lines]', '›'])
+    await ui.press({ key: 'paste-1' })
+    const open = await ui.drawn()
+    expect(texts(open)).toEqual(['봐줘', ' ', '# 제목\n> 메모\n끝', '그리고', ' '])
+    expect(labels(open)).toEqual(['[Pasted text +2 lines]', '⌄', '[Pasted text +1 lines]', '›'])
+  })
+
+  test(`${surface}: in the ctrl+o transcript a paste is open`, async ($, on) => {
+    engine(on)
+    const text = `\n\n<pasted_content id="x">\na\nb\n</pasted_content id="x">\n`
+    const tree = await (await $.ui.mount({ plugin: 'desktop-look', surface, component: 'UserMessage', props: { ...PROMPT, text } })).drawn()
+    expect(texts(tree)).toEqual(surface === 'terminal' ? [' ', 'a\nb'] : ['ENGINE'])
   })
 
   test(`${surface}: a task notification keeps the engine's row`, async ($, on) => {
@@ -388,6 +417,12 @@ test('lists: what is not a list stays the engine\'s', () => {
   expect(listed('<context>x</context>\n- a')).toBeNull()
 })
 
+test('a prompt of only a paste folds to the composer\'s placeholder, no blank rows around it', () => {
+  const log = Array.from({ length: 9 }, (_, i) => `line ${i}`).join('\n')
+  expect(folded(`\n\n<pasted_content id="0931">\n${log}\n</pasted_content id="0931">\n`)).toBe('[Pasted text +8 lines]')
+  expect(folded('그냥 글')).toBe('그냥 글')
+})
+
 test('lists: rules, quotes holding a list, and task boxes are cut out too', () => {
   expect(lines('* * *\n- - -\n문단\n\n---')).toEqual([rule(), rule(), text('문단'), rule(true)])
   // A quote's own lines, markers off, cut as any text; a lazy line carries on
@@ -498,7 +533,8 @@ for (const [bubbleWidth, spacer] of [['60%', '40%'], ['90%', '10%'], [undefined,
     // The room right of the bubble, at least this: the bubble keeps to the left edge.
     const row = boxes(await ui.drawn())[0]!
     const [bubble, room] = (row.children ?? []).filter((n): n is BoxElement => typeof n !== 'string' && n.type === 'Box')
-    expect(bubble?.props?.borderStyle).toBe('round')
+    expect(bubble?.props?.flexShrink).toBe(1)
+    expect(bars(bubble!)).toHaveLength(1)
     expect(room?.props).toMatchObject({ flexGrow: 1, minWidth: spacer })
   })
 }

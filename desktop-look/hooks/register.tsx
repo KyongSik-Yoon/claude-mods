@@ -13,6 +13,12 @@ const WIDTHS = ['60%', '75%', '90%'] as const
 // rgb(177,185,249) in dark.
 const CALM_COLOR = 'suggestion'
 
+
+// The bar beside the person's prompt: a full cell in the theme's Claude
+// orange, so it reads apart from a tool line's thin state mark and from the
+// grey bar beside the text between tool calls.
+const PROMPT_COLOR = 'claude'
+
 // The mobile app's soft grey bar beside the text between tool calls; the
 // theme's own shade, so it reads in light and dark.
 const NARRATION_COLOR = 'subtle'
@@ -639,6 +645,39 @@ const setIn = (ui: Pick<ClientElements, 'Box' | 'Text' | 'Markdown'>, pieces: re
   return draw(pieces, 0)
 }
 
+// Pasted text reaches the hook in the engine's framing for the model: each
+// block as `\n\n<pasted_content id="…">\n` + what was pasted +
+// `\n</pasted_content id="…">\n`, in place of the composer's placeholder. Each
+// folds back to that placeholder, the framing's newlines with it, counted as
+// the engine counts (the pasted text's line breaks). The placeholder's number
+// runs across the session and the hook is not told it, so it is left out.
+const PASTED = /(?:\n\n)?<pasted_content id="([^"]*)">\n?([\s\S]*?)\n?<\/pasted_content id="\1">\n?/g
+
+// A prompt cut where its pasted blocks are; each block with the line breaks
+// the engine counts (it drops a paste's last one before framing, so a paste
+// that ended in one reads one short of the composer's).
+export type Said = { kind: 'text'; text: string } | { kind: 'paste'; body: string; lines: number }
+
+export const said = (text: string): Said[] => {
+  const out: Said[] = []
+  let at = 0
+  for (const m of text.matchAll(PASTED)) {
+    if (m.index > at) out.push({ kind: 'text', text: text.slice(at, m.index) })
+    const body = m[2] ?? ''
+    out.push({ kind: 'paste', body, lines: body.split('\n').length - 1 })
+    at = m.index + m[0].length
+  }
+  if (at < text.length) out.push({ kind: 'text', text: text.slice(at) })
+  return out
+}
+
+export const placeholder = (lines: number): string => `[Pasted text +${lines} lines]`
+
+export const folded = (text: string): string =>
+  said(text)
+    .map(piece => (piece.kind === 'text' ? piece.text : placeholder(piece.lines)))
+    .join('')
+
 export const register: Register = (on, options) => {
   const width = WIDTHS.find(w => w === options.bubbleWidth) ?? '75%'
   const spacer = `${100 - parseInt(width, 10)}%`
@@ -811,18 +850,44 @@ export const register: Register = (on, options) => {
     )
   })
 
-  // The person's prompt in a round bubble at the left edge, where the
+  // The person's prompt at the left edge beside an orange bar, where the
   // engine's row for a pasted image (`⎿ [Image #1]`), which no hook reaches,
-  // sits under it; at most `width` of the terminal wide.
-  on('ui.render', { component: 'UserMessage' }, ($, e, next) => {
+  // sits under it; at most `width` of the terminal wide. Pasted text reads as
+  // the composer's placeholder, which a press opens.
+  on('ui.render', { component: 'UserMessage' }, async ($, e, next) => {
     if (e.surface !== 'terminal' || !OWN.has(e.props.origin.kind) || e.props.from || e.props.task) return next(e)
-    const { Box, Text } = $.ui.resolve(e)
+    const { Box, Text, Button } = $.ui.resolve(e)
+    const pieces = said(e.props.text)
+    // A pasted block is its placeholder, a press away from what was pasted:
+    // each its own row, the text around it on rows of its own.
+    const rows: RenderNode[] = []
+    for (const [i, piece] of pieces.entries()) {
+      if (piece.kind === 'text') {
+        const text = piece.text.replace(/^\n/, '').replace(/\s+$/, '')
+        if (text) rows.push(<Text wrap="wrap">{text}</Text>)
+        continue
+      }
+      const member = memberOf(OPEN, { requestId: `${e.requestId}:paste:${i}` })
+      const open = e.props.isExpanded || (await read($, member))
+      const toggle = () => void update($, member, v => !v)
+      rows.push(
+        <Box flexDirection="column">
+          <Box flexDirection="row">
+            <Button plain dimColor key={`paste-${i}`} label={placeholder(piece.lines)} onPress={toggle} />
+            <Text> </Text>
+            <Button plain dimColor key={`mark-${i}`} label={open ? '⌄' : '›'} onPress={toggle} />
+          </Box>
+          {open ? <Text wrap="wrap">{piece.body}</Text> : null}
+        </Box>,
+      )
+    }
     return (
       <Box flexDirection="row" marginTop={1}>
-        <Box flexShrink={1} borderStyle="round" borderDimColor paddingX={1}>
-          <Text wrap="wrap">
-            {e.props.text}
-          </Text>
+        <Box flexShrink={1} flexDirection="row">
+          <Box width={1} flexShrink={0} backgroundColor={PROMPT_COLOR} />
+          <Box flexShrink={1} flexDirection="column" paddingLeft={1}>
+            {...rows}
+          </Box>
         </Box>
         <Box flexGrow={1} minWidth={spacer} />
       </Box>
